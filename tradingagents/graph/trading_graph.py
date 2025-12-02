@@ -20,20 +20,15 @@ from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskDebateState,
 )
-from tradingagents.dataflows.config import set_config
 
 # Import the new abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
-    get_stock_data,
-    get_indicators,
-    get_fundamentals,
-    get_balance_sheet,
-    get_cashflow,
-    get_income_statement,
-    get_news,
-    get_insider_sentiment,
-    get_insider_transactions,
-    get_global_news
+    get_crypto_market_data,
+    get_support_resistance_levels,
+    get_crypto_newsflash,
+    get_crypto_longform_articles,
+    get_crypto_longform_candidates,
+    get_crypto_article_content,
 )
 
 from .conditional_logic import ConditionalLogic
@@ -48,7 +43,7 @@ class TradingAgentsGraph:
 
     def __init__(
         self,
-        selected_analysts=["market", "social", "news", "fundamentals"],
+        selected_analysts=["market", "newsflash", "longform"],
         debug=False,
         config: Dict[str, Any] = None,
     ):
@@ -62,27 +57,35 @@ class TradingAgentsGraph:
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
 
-        # Update the interface's config
-        set_config(self.config)
-
-        # Create necessary directories
+        # Create cache directories if needed
         os.makedirs(
             os.path.join(self.config["project_dir"], "dataflows/data_cache"),
             exist_ok=True,
         )
 
-        # Initialize LLMs
-        if self.config["llm_provider"].lower() == "openai" or self.config["llm_provider"] == "ollama" or self.config["llm_provider"] == "openrouter":
-            self.deep_thinking_llm = ChatOpenAI(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatOpenAI(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"].lower() == "anthropic":
-            self.deep_thinking_llm = ChatAnthropic(model=self.config["deep_think_llm"], base_url=self.config["backend_url"])
-            self.quick_thinking_llm = ChatAnthropic(model=self.config["quick_think_llm"], base_url=self.config["backend_url"])
-        elif self.config["llm_provider"].lower() == "google":
-            self.deep_thinking_llm = ChatGoogleGenerativeAI(model=self.config["deep_think_llm"])
-            self.quick_thinking_llm = ChatGoogleGenerativeAI(model=self.config["quick_think_llm"])
-        else:
-            raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
+        quick_provider = (
+            self.config.get("quick_llm_provider") or self.config["llm_provider"]
+        )
+        deep_provider = (
+            self.config.get("deep_llm_provider") or self.config["llm_provider"]
+        )
+        quick_backend = (
+            self.config.get("quick_backend_url") or self.config["backend_url"]
+        )
+        deep_backend = (
+            self.config.get("deep_backend_url") or self.config["backend_url"]
+        )
+
+        self.quick_thinking_llm = self._initialize_llm(
+            provider=quick_provider,
+            model_name=self.config["quick_think_llm"],
+            backend_url=quick_backend,
+        )
+        self.deep_thinking_llm = self._initialize_llm(
+            provider=deep_provider,
+            model_name=self.config["deep_think_llm"],
+            backend_url=deep_backend,
+        )
         
         # Initialize memories
         self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
@@ -120,39 +123,45 @@ class TradingAgentsGraph:
         # Set up the graph
         self.graph = self.graph_setup.setup_graph(selected_analysts)
 
+    def _initialize_llm(self, provider: str, model_name: str, backend_url: Optional[str]):
+        provider = provider.lower()
+        if provider in ("openai", "ollama", "openrouter"):
+            base = backend_url or "https://api.openai.com/v1"
+            if provider == "openrouter" and backend_url is None:
+                base = "https://openrouter.ai/api/v1"
+            return ChatOpenAI(model=model_name, base_url=base)
+        if provider == "deepseek":
+            base = backend_url or "https://api.deepseek.com/v1"
+            api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "DEEPSEEK_API_KEY 未设置，无法初始化 DeepSeek LLM。请在 .env 中提供。"
+                )
+            return ChatOpenAI(model=model_name, base_url=base, api_key=api_key)
+        if provider == "anthropic":
+            return ChatAnthropic(model=model_name, base_url=backend_url)
+        if provider == "google":
+            return ChatGoogleGenerativeAI(model=model_name)
+        raise ValueError(f"Unsupported LLM provider: {provider}")
+
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
         return {
             "market": ToolNode(
                 [
-                    # Core stock data tools
-                    get_stock_data,
-                    # Technical indicators
-                    get_indicators,
+                    get_crypto_market_data,
+                    get_support_resistance_levels,
                 ]
             ),
-            "social": ToolNode(
+            "newsflash": ToolNode(
                 [
-                    # News tools for social media analysis
-                    get_news,
+                    get_crypto_newsflash,
                 ]
             ),
-            "news": ToolNode(
+            "longform": ToolNode(
                 [
-                    # News and insider information
-                    get_news,
-                    get_global_news,
-                    get_insider_sentiment,
-                    get_insider_transactions,
-                ]
-            ),
-            "fundamentals": ToolNode(
-                [
-                    # Fundamental analysis tools
-                    get_fundamentals,
-                    get_balance_sheet,
-                    get_cashflow,
-                    get_income_statement,
+                    get_crypto_longform_candidates,
+                    get_crypto_article_content,
                 ]
             ),
         }
@@ -198,9 +207,8 @@ class TradingAgentsGraph:
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
             "market_report": final_state["market_report"],
-            "sentiment_report": final_state["sentiment_report"],
-            "news_report": final_state["news_report"],
-            "fundamentals_report": final_state["fundamentals_report"],
+            "newsflash_report": final_state["newsflash_report"],
+            "longform_report": final_state["longform_report"],
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],

@@ -1,71 +1,85 @@
 from langchain_core.tools import tool
-from typing import Annotated
-from tradingagents.dataflows.interface import route_to_vendor
+from typing import Annotated, List, Dict
+from tradingagents.dataflows.odaily import (
+    get_newsflash as fetch_odaily_newsflash,
+    get_articles as fetch_odaily_articles,
+    get_article_candidates,
+    get_article_content_by_id,
+)
+
+
+def _format_odaily_entries(entries: List[Dict], entry_type: str) -> str:
+    if not entries:
+        return f"No {entry_type} entries found for the requested window."
+
+    lines = [f"{entry_type.title()} entries ({len(entries)}):"]
+    for entry in entries:
+        published = entry.get("published") or entry.get("fetched_at")
+        title = entry.get("title") or "Untitled"
+        summary = entry.get("summary") or ""
+        lines.append(
+            f"- [{published}] {title}\n  Summary: {summary}"
+        )
+    return "\n".join(lines)
+
 
 @tool
-def get_news(
-    ticker: Annotated[str, "Ticker symbol"],
-    start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
-    end_date: Annotated[str, "End date in yyyy-mm-dd format"],
+def get_crypto_newsflash(
+    limit: Annotated[int, "Maximum number of news flashes to return"] = 20,
+    lookback_hours: Annotated[int, "Lookback window in hours"] = 24,
 ) -> str:
     """
-    Retrieve news data for a given ticker symbol.
-    Uses the configured news_data vendor.
-    Args:
-        ticker (str): Ticker symbol
-        start_date (str): Start date in yyyy-mm-dd format
-        end_date (str): End date in yyyy-mm-dd format
-    Returns:
-        str: A formatted string containing news data
+    Retrieve crypto market news flashes from Odaily RSS and store cached copies in SQLite.
     """
-    return route_to_vendor("get_news", ticker, start_date, end_date)
+    entries = fetch_odaily_newsflash(limit=limit, lookback_hours=lookback_hours)
+    return _format_odaily_entries(entries, "newsflash")
+
 
 @tool
-def get_global_news(
-    curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
-    look_back_days: Annotated[int, "Number of days to look back"] = 7,
-    limit: Annotated[int, "Maximum number of articles to return"] = 5,
+def get_crypto_longform_articles(
+    limit: Annotated[int, "Maximum number of articles to return"] = 3,
+    lookback_days: Annotated[int, "Lookback window in days"] = 7,
 ) -> str:
     """
-    Retrieve global news data.
-    Uses the configured news_data vendor.
-    Args:
-        curr_date (str): Current date in yyyy-mm-dd format
-        look_back_days (int): Number of days to look back (default 7)
-        limit (int): Maximum number of articles to return (default 5)
-    Returns:
-        str: A formatted string containing global news data
+    Retrieve longer-form crypto articles from Odaily RSS and store cached copies in SQLite.
     """
-    return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
+    entries = fetch_odaily_articles(limit=limit, lookback_days=lookback_days)
+    return _format_odaily_entries(entries, "article")
+
 
 @tool
-def get_insider_sentiment(
-    ticker: Annotated[str, "ticker symbol for the company"],
-    curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"],
+def get_crypto_longform_candidates(
+    limit: Annotated[int, "Number of titles to retrieve"] = 20,
+    lookback_days: Annotated[int, "Lookback window in days"] = 7,
 ) -> str:
     """
-    Retrieve insider sentiment information about a company.
-    Uses the configured news_data vendor.
-    Args:
-        ticker (str): Ticker symbol of the company
-        curr_date (str): Current date you are trading at, yyyy-mm-dd
-    Returns:
-        str: A report of insider sentiment data
+    Retrieve recent Odaily long-form article titles with metadata for LLM screening.
     """
-    return route_to_vendor("get_insider_sentiment", ticker, curr_date)
+    entries = get_article_candidates(limit=limit, lookback_days=lookback_days)
+    if not entries:
+        return "No recent long-form articles available."
+    lines = ["Recent Odaily long-form articles (ID + Title):"]
+    for idx, entry in enumerate(entries, 1):
+        lines.append(f"{idx}. ID={entry['entry_id']} | Title: {entry['title']}")
+    return "\n".join(lines)
+
 
 @tool
-def get_insider_transactions(
-    ticker: Annotated[str, "ticker symbol"],
-    curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"],
+def get_crypto_article_content(
+    entry_id: Annotated[str, "Entry ID returned from candidate list"],
 ) -> str:
     """
-    Retrieve insider transaction information about a company.
-    Uses the configured news_data vendor.
-    Args:
-        ticker (str): Ticker symbol of the company
-        curr_date (str): Current date you are trading at, yyyy-mm-dd
-    Returns:
-        str: A report of insider transaction data
+    Retrieve key fields (title, summary, published) from Odaily by entry_id.
     """
-    return route_to_vendor("get_insider_transactions", ticker, curr_date)
+    article = get_article_content_by_id(entry_id)
+    if not article:
+        return f"No article found for entry_id={entry_id}"
+    published = article.get("published") or "Unknown"
+    summary = article.get("summary") or ""
+    title = article.get("title") or ""
+    return (
+        f"Title: {title}\n"
+        f"Entry ID: {article.get('entry_id')}\n"
+        f"Published: {published}\n\n"
+        f"Summary: {summary}"
+    )

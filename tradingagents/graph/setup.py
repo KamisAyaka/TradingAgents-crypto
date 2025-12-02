@@ -38,16 +38,15 @@ class GraphSetup:
         self.conditional_logic = conditional_logic
 
     def setup_graph(
-        self, selected_analysts=["market", "social", "news", "fundamentals"]
+        self, selected_analysts=["market", "newsflash", "longform"]
     ):
         """Set up and compile the agent workflow graph.
 
         Args:
             selected_analysts (list): List of analyst types to include. Options are:
-                - "market": Market analyst
-                - "social": Social media analyst
-                - "news": News analyst
-                - "fundamentals": Fundamentals analyst
+                - "market": Crypto market/technical analyst
+                - "newsflash": Odaily short-form news analyst
+                - "longform": Odaily long-form research analyst
         """
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
@@ -58,32 +57,25 @@ class GraphSetup:
         tool_nodes = {}
 
         if "market" in selected_analysts:
-            analyst_nodes["market"] = create_market_analyst(
-                self.quick_thinking_llm
+            analyst_nodes["market"] = create_crypto_market_analyst(
+                self.deep_thinking_llm
             )
             delete_nodes["market"] = create_msg_delete()
             tool_nodes["market"] = self.tool_nodes["market"]
 
-        if "social" in selected_analysts:
-            analyst_nodes["social"] = create_social_media_analyst(
+        if "newsflash" in selected_analysts:
+            analyst_nodes["newsflash"] = create_crypto_newsflash_analyst(
                 self.quick_thinking_llm
             )
-            delete_nodes["social"] = create_msg_delete()
-            tool_nodes["social"] = self.tool_nodes["social"]
+            delete_nodes["newsflash"] = create_msg_delete()
+            tool_nodes["newsflash"] = self.tool_nodes["newsflash"]
 
-        if "news" in selected_analysts:
-            analyst_nodes["news"] = create_news_analyst(
+        if "longform" in selected_analysts:
+            analyst_nodes["longform"] = create_crypto_longform_analyst(
                 self.quick_thinking_llm
             )
-            delete_nodes["news"] = create_msg_delete()
-            tool_nodes["news"] = self.tool_nodes["news"]
-
-        if "fundamentals" in selected_analysts:
-            analyst_nodes["fundamentals"] = create_fundamentals_analyst(
-                self.quick_thinking_llm
-            )
-            delete_nodes["fundamentals"] = create_msg_delete()
-            tool_nodes["fundamentals"] = self.tool_nodes["fundamentals"]
+            delete_nodes["longform"] = create_msg_delete()
+            tool_nodes["longform"] = self.tool_nodes["longform"]
 
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(

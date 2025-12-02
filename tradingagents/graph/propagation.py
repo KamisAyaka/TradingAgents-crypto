@@ -36,9 +36,8 @@ class Propagator:
                 }
             ),
             "market_report": "",
-            "fundamentals_report": "",
-            "sentiment_report": "",
-            "news_report": "",
+            "newsflash_report": "",
+            "longform_report": "",
         }
 
     def get_graph_args(self) -> Dict[str, Any]:

@@ -5,23 +5,23 @@ from cli.models import AnalystType
 
 ANALYST_ORDER = [
     ("Market Analyst", AnalystType.MARKET),
-    ("Social Media Analyst", AnalystType.SOCIAL),
-    ("News Analyst", AnalystType.NEWS),
-    ("Fundamentals Analyst", AnalystType.FUNDAMENTALS),
+    ("Newsflash Analyst", AnalystType.NEWSFLASH),
+    ("Long-form Analyst", AnalystType.LONGFORM),
 ]
 
 
 def get_ticker() -> str:
-    """Prompt the user to enter a ticker symbol."""
+    """Prompt the user to enter a trading pair."""
     ticker = questionary.text(
-        "Enter the ticker symbol to analyze:",
-        validate=lambda x: len(x.strip()) > 0 or "Please enter a valid ticker symbol.",
+        "Enter the Binance symbol to analyze (e.g., BTCUSDT):",
+        validate=lambda x: len(x.strip()) > 0 or "Please enter a valid trading pair.",
         style=questionary.Style(
             [
                 ("text", "fg:green"),
                 ("highlighted", "noinherit"),
             ]
         ),
+        default="BTCUSDT",
     ).ask()
 
     if not ticker:

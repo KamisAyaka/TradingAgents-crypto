@@ -48,9 +48,8 @@ class MessageBuffer:
         self.agent_status = {
             # Analyst Team
             "Market Analyst": "pending",
-            "Social Analyst": "pending",
-            "News Analyst": "pending",
-            "Fundamentals Analyst": "pending",
+            "Newsflash Analyst": "pending",
+            "Longform Analyst": "pending",
             # Research Team
             "Bull Researcher": "pending",
             "Bear Researcher": "pending",
@@ -67,9 +66,8 @@ class MessageBuffer:
         self.current_agent = None
         self.report_sections = {
             "market_report": None,
-            "sentiment_report": None,
-            "news_report": None,
-            "fundamentals_report": None,
+            "newsflash_report": None,
+            "longform_report": None,
             "investment_plan": None,
             "trader_investment_plan": None,
             "final_trade_decision": None,
@@ -108,9 +106,8 @@ class MessageBuffer:
             # Format the current section for display
             section_titles = {
                 "market_report": "Market Analysis",
-                "sentiment_report": "Social Sentiment",
-                "news_report": "News Analysis",
-                "fundamentals_report": "Fundamentals Analysis",
+                "newsflash_report": "Newsflash Highlights",
+                "longform_report": "Long-form Research",
                 "investment_plan": "Research Team Decision",
                 "trader_investment_plan": "Trading Team Plan",
                 "final_trade_decision": "Portfolio Management Decision",
@@ -130,9 +127,8 @@ class MessageBuffer:
             self.report_sections[section]
             for section in [
                 "market_report",
-                "sentiment_report",
-                "news_report",
-                "fundamentals_report",
+                "newsflash_report",
+                "longform_report",
             ]
         ):
             report_parts.append("## Analyst Team Reports")
@@ -140,17 +136,13 @@ class MessageBuffer:
                 report_parts.append(
                     f"### Market Analysis\n{self.report_sections['market_report']}"
                 )
-            if self.report_sections["sentiment_report"]:
+            if self.report_sections["newsflash_report"]:
                 report_parts.append(
-                    f"### Social Sentiment\n{self.report_sections['sentiment_report']}"
+                    f"### Newsflash Highlights\n{self.report_sections['newsflash_report']}"
                 )
-            if self.report_sections["news_report"]:
+            if self.report_sections["longform_report"]:
                 report_parts.append(
-                    f"### News Analysis\n{self.report_sections['news_report']}"
-                )
-            if self.report_sections["fundamentals_report"]:
-                report_parts.append(
-                    f"### Fundamentals Analysis\n{self.report_sections['fundamentals_report']}"
+                    f"### Long-form Research\n{self.report_sections['longform_report']}"
                 )
 
         # Research Team Reports
@@ -221,9 +213,8 @@ def update_display(layout, spinner_text=None):
     teams = {
         "Analyst Team": [
             "Market Analyst",
-            "Social Analyst",
-            "News Analyst",
-            "Fundamentals Analyst",
+            "Newsflash Analyst",
+            "Longform Analyst",
         ],
         "Research Team": ["Bull Researcher", "Bear Researcher", "Research Manager"],
         "Trading Team": ["Trader"],
@@ -432,7 +423,7 @@ def get_user_selections():
     # Step 1: Ticker symbol
     console.print(
         create_question_box(
-            "Step 1: Ticker Symbol", "Enter the ticker symbol to analyze", "SPY"
+            "Step 1: Trading Pair", "Enter the Binance symbol to analyze (e.g., BTCUSDT)", "BTCUSDT"
         )
     )
     selected_ticker = get_ticker()
@@ -497,8 +488,8 @@ def get_user_selections():
 
 
 def get_ticker():
-    """Get ticker symbol from user input."""
-    return typer.prompt("", default="SPY")
+    """Get trading pair from user input."""
+    return typer.prompt("", default="BTCUSDT")
 
 
 def get_analysis_date():
@@ -538,34 +529,23 @@ def display_complete_report(final_state):
             )
         )
 
-    # Social Analyst Report
-    if final_state.get("sentiment_report"):
+    # Newsflash Analyst Report
+    if final_state.get("newsflash_report"):
         analyst_reports.append(
             Panel(
-                Markdown(final_state["sentiment_report"]),
-                title="Social Analyst",
+                Markdown(final_state["newsflash_report"]),
+                title="Newsflash Analyst",
                 border_style="blue",
                 padding=(1, 2),
             )
         )
 
-    # News Analyst Report
-    if final_state.get("news_report"):
+    # Longform Analyst Report
+    if final_state.get("longform_report"):
         analyst_reports.append(
             Panel(
-                Markdown(final_state["news_report"]),
-                title="News Analyst",
-                border_style="blue",
-                padding=(1, 2),
-            )
-        )
-
-    # Fundamentals Analyst Report
-    if final_state.get("fundamentals_report"):
-        analyst_reports.append(
-            Panel(
-                Markdown(final_state["fundamentals_report"]),
-                title="Fundamentals Analyst",
+                Markdown(final_state["longform_report"]),
+                title="Long-form Analyst",
                 border_style="blue",
                 padding=(1, 2),
             )
@@ -882,40 +862,27 @@ def run_analysis():
                     )
                     message_buffer.update_agent_status("Market Analyst", "completed")
                     # Set next analyst to in_progress
-                    if "social" in selections["analysts"]:
+                    if "newsflash" in selections["analysts"]:
                         message_buffer.update_agent_status(
-                            "Social Analyst", "in_progress"
+                            "Newsflash Analyst", "in_progress"
                         )
 
-                if "sentiment_report" in chunk and chunk["sentiment_report"]:
+                if "newsflash_report" in chunk and chunk["newsflash_report"]:
                     message_buffer.update_report_section(
-                        "sentiment_report", chunk["sentiment_report"]
+                        "newsflash_report", chunk["newsflash_report"]
                     )
-                    message_buffer.update_agent_status("Social Analyst", "completed")
+                    message_buffer.update_agent_status("Newsflash Analyst", "completed")
                     # Set next analyst to in_progress
-                    if "news" in selections["analysts"]:
+                    if "longform" in selections["analysts"]:
                         message_buffer.update_agent_status(
-                            "News Analyst", "in_progress"
+                            "Longform Analyst", "in_progress"
                         )
 
-                if "news_report" in chunk and chunk["news_report"]:
+                if "longform_report" in chunk and chunk["longform_report"]:
                     message_buffer.update_report_section(
-                        "news_report", chunk["news_report"]
+                        "longform_report", chunk["longform_report"]
                     )
-                    message_buffer.update_agent_status("News Analyst", "completed")
-                    # Set next analyst to in_progress
-                    if "fundamentals" in selections["analysts"]:
-                        message_buffer.update_agent_status(
-                            "Fundamentals Analyst", "in_progress"
-                        )
-
-                if "fundamentals_report" in chunk and chunk["fundamentals_report"]:
-                    message_buffer.update_report_section(
-                        "fundamentals_report", chunk["fundamentals_report"]
-                    )
-                    message_buffer.update_agent_status(
-                        "Fundamentals Analyst", "completed"
-                    )
+                    message_buffer.update_agent_status("Longform Analyst", "completed")
                     # Set all research team members to in_progress
                     update_research_team_status("in_progress")
 

@@ -1,6 +1,6 @@
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
-
+from datetime import date
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -8,24 +8,21 @@ load_dotenv()
 
 # Create a custom config
 config = DEFAULT_CONFIG.copy()
-config["deep_think_llm"] = "gpt-4o-mini"  # Use a different model
-config["quick_think_llm"] = "gpt-4o-mini"  # Use a different model
-config["max_debate_rounds"] = 1  # Increase debate rounds
-
-# Configure data vendors (default uses yfinance and alpha_vantage)
-config["data_vendors"] = {
-    "core_stock_apis": "yfinance",           # Options: yfinance, alpha_vantage, local
-    "technical_indicators": "yfinance",      # Options: yfinance, alpha_vantage, local
-    "fundamental_data": "alpha_vantage",     # Options: openai, alpha_vantage, local
-    "news_data": "alpha_vantage",            # Options: openai, alpha_vantage, google, local
-}
+config["quick_llm_provider"] = "google"
+config["quick_think_llm"] = "gemini-2.5-pro"
+config["deep_llm_provider"] = "deepseek"
+config["deep_think_llm"] = "deepseek-chat"
+config["deep_backend_url"] = "https://api.deepseek.com/v1"
+config["max_debate_rounds"] = 1
 
 # Initialize with custom config
-ta = TradingAgentsGraph(debug=True, config=config)
+ta = TradingAgentsGraph(
+    debug=True,
+    config=config,
+    selected_analysts=["market", "newsflash", "longform"],
+)
 
-# forward propagate
-_, decision = ta.propagate("NVDA", "2024-05-10")
+# forward propagate for a crypto pair
+trade_date = date.today().isoformat()  # 或任何你想测试的日期字符串
+_, decision = ta.propagate("BTCUSDT", trade_date)
 print(decision)
-
-# Memorize mistakes and reflect
-# ta.reflect_and_remember(1000) # parameter is the position returns
