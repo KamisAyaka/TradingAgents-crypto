@@ -7,7 +7,6 @@ basic technical indicators without relying on legacy equity vendors.
 from __future__ import annotations
 
 import math
-import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,24 +14,37 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-import requests
 
-BINANCE_KLINES = os.getenv(
-    "BINANCE_KLINES_URL", "https://api.binance.com/api/v3/klines"
-)
-BINANCE_KLINES_GLOBAL = os.getenv(
-    "BINANCE_KLINES_GLOBAL_URL", "https://data.binance.com/api/v3/klines"
-)
-BINANCE_KLINES_MIRROR = os.getenv(
-    "BINANCE_KLINES_MIRROR_URL", "https://data-api.binance.vision/api/v3/klines"
-)
+INDICATOR_COLUMN_SPECS = {
+    "ema_5": "REAL",
+    "ema_10": "REAL",
+    "ema_20": "REAL",
+    "macd": "REAL",
+    "macd_signal": "REAL",
+    "macd_hist": "REAL",
+    "boll_mid": "REAL",
+    "boll_upper": "REAL",
+    "boll_lower": "REAL",
+    "kdj_k": "REAL",
+    "kdj_d": "REAL",
+    "kdj_j": "REAL",
+}
+INDICATOR_COLUMNS = list(INDICATOR_COLUMN_SPECS.keys())
 
-CACHE_DIR = Path(__file__).resolve().parent / "data_cache"
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
-BINANCE_DB_PATH = CACHE_DIR / "binance_cache.db"
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+BINANCE_DB_PATH = DATA_DIR / "binance_cache.db"
 
 
-def _ensure_cache_db() -> None:
+def _ensure_indicator_columns(conn: sqlite3.Connection) -> None:
+    cursor = conn.execute("PRAGMA table_info(klines)")
+    existing = {row[1] for row in cursor.fetchall()}
+    for name, col_type in INDICATOR_COLUMN_SPECS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE klines ADD COLUMN {name} {col_type}")
+
+
+def ensure_cache_db() -> None:
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
         conn.execute(
             """
@@ -55,31 +67,38 @@ def _ensure_cache_db() -> None:
             )
             """
         )
+        _ensure_indicator_columns(conn)
         conn.commit()
 
 
 def _row_to_kline(row: sqlite3.Row) -> Dict[str, float]:
-    return {
-        "open_time": int(row[0]),
-        "close_time": int(row[1]),
-        "open": float(row[2]),
-        "high": float(row[3]),
-        "low": float(row[4]),
-        "close": float(row[5]),
-        "volume": float(row[6]),
-        "quote_volume": float(row[7]) if row[7] is not None else 0.0,
-        "trade_count": int(row[8]) if row[8] is not None else 0,
-        "taker_buy_base": float(row[9]) if row[9] is not None else 0.0,
-        "taker_buy_quote": float(row[10]) if row[10] is not None else 0.0,
+    row_dict = dict(row)
+    record: Dict[str, Any] = {
+        "open_time": int(row_dict["open_time"]),
+        "close_time": int(row_dict["close_time"]),
+        "open": float(row_dict["open"]),
+        "high": float(row_dict["high"]),
+        "low": float(row_dict["low"]),
+        "close": float(row_dict["close"]),
+        "volume": float(row_dict["volume"]),
+        "quote_volume": float(row_dict["quote_volume"]) if row_dict["quote_volume"] is not None else 0.0,
+        "trade_count": int(row_dict["trade_count"]) if row_dict["trade_count"] is not None else 0,
+        "taker_buy_base": float(row_dict["taker_buy_base"]) if row_dict["taker_buy_base"] is not None else 0.0,
+        "taker_buy_quote": float(row_dict["taker_buy_quote"]) if row_dict["taker_buy_quote"] is not None else 0.0,
     }
+    for column in INDICATOR_COLUMNS:
+        value = row_dict.get(column)
+        record[column] = float(value) if value is not None else None
+    return record
 
 
-def _load_cached_klines(symbol: str, interval: str, limit: int) -> List[Dict[str, float]]:
-    _ensure_cache_db()
+def load_cached_klines(symbol: str, interval: str, limit: int) -> List[Dict[str, float]]:
+    ensure_cache_db()
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
+        indicator_select = ", ".join(INDICATOR_COLUMNS)
         cursor = conn.execute(
-            """
+            f"""
             SELECT
                 open_time,
                 close_time,
@@ -91,7 +110,8 @@ def _load_cached_klines(symbol: str, interval: str, limit: int) -> List[Dict[str
                 quote_volume,
                 trade_count,
                 taker_buy_base,
-                taker_buy_quote
+                taker_buy_quote,
+                {indicator_select}
             FROM klines
             WHERE symbol = ? AND interval = ?
             ORDER BY open_time DESC
@@ -105,137 +125,17 @@ def _load_cached_klines(symbol: str, interval: str, limit: int) -> List[Dict[str
     return list(reversed(klines))
 
 
-def _store_klines(symbol: str, interval: str, klines: List[Dict[str, float]]) -> None:
-    if not klines:
-        return
-    _ensure_cache_db()
-    payloads = []
-    updated_at = datetime.utcnow().isoformat()
-    for item in klines:
-        payloads.append(
-            (
-                symbol.upper(),
-                interval,
-                int(item["open_time"]),
-                int(item["close_time"]),
-                float(item["open"]),
-                float(item["high"]),
-                float(item["low"]),
-                float(item["close"]),
-                float(item["volume"]),
-                float(item.get("quote_volume") or 0),
-                int(item.get("trade_count") or 0),
-                float(item.get("taker_buy_base") or 0),
-                float(item.get("taker_buy_quote") or 0),
-                updated_at,
-            )
-        )
-
-    with sqlite3.connect(BINANCE_DB_PATH) as conn:
-        conn.executemany(
-            """
-            INSERT INTO klines (
-                symbol, interval, open_time, close_time, open, high,
-                low, close, volume, quote_volume, trade_count,
-                taker_buy_base, taker_buy_quote, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(symbol, interval, open_time) DO UPDATE SET
-                close_time=excluded.close_time,
-                open=excluded.open,
-                high=excluded.high,
-                low=excluded.low,
-                close=excluded.close,
-                volume=excluded.volume,
-                quote_volume=excluded.quote_volume,
-                trade_count=excluded.trade_count,
-                taker_buy_base=excluded.taker_buy_base,
-                taker_buy_quote=excluded.taker_buy_quote,
-                updated_at=excluded.updated_at
-            """,
-            payloads,
-        )
-        conn.commit()
-
-
-class BinanceAPIError(RuntimeError):
-    """Raised when Binance responds with an error payload."""
+def get_cached_klines(
+    symbol: str,
+    interval: str = "1h",
+    limit: int = 200,
+) -> List[Dict[str, float]]:
+    """Public helper for retrieving klines directly from the SQLite cache."""
+    return load_cached_klines(symbol, interval, limit)
 
 
 def _ts_to_iso(ts: int) -> str:
     return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
-
-
-def _request_klines_api(
-    symbol: str,
-    interval: str = "1h",
-    limit: int = 200,
-) -> List[Dict[str, float]]:
-    params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
-    endpoints = [BINANCE_KLINES]
-    for alt in (BINANCE_KLINES_GLOBAL, BINANCE_KLINES_MIRROR):
-        if alt and alt not in endpoints:
-            endpoints.append(alt)
-
-    last_error = None
-    payload = None
-    for endpoint in endpoints:
-        try:
-            resp = requests.get(endpoint, params=params, timeout=15)
-        except requests.RequestException as exc:
-            last_error = f"Failed to call Binance endpoint {endpoint}: {exc}"
-            continue
-
-        if resp.status_code == 200:
-            payload = resp.json()
-            break
-
-        last_error = (
-            f"Binance responded with {resp.status_code} from {endpoint}: {resp.text[:200]}"
-        )
-        if resp.status_code == 451:
-            continue
-
-    if payload is None:
-        raise BinanceAPIError(last_error or "Unknown error calling Binance")
-
-    if isinstance(payload, dict) and payload.get("code"):
-        raise BinanceAPIError(f"Binance API error: {payload}")
-
-    klines: List[Dict[str, float]] = []
-    for item in payload:
-        open_time = int(item[0])
-        close_time = int(item[6])
-        klines.append(
-            {
-                "open_time": open_time,
-                "close_time": close_time,
-                "open": float(item[1]),
-                "high": float(item[2]),
-                "low": float(item[3]),
-                "close": float(item[4]),
-                "volume": float(item[5]),
-                "quote_volume": float(item[7]),
-                "trade_count": int(item[8]),
-                "taker_buy_base": float(item[9]),
-                "taker_buy_quote": float(item[10]),
-            }
-        )
-    return klines
-
-
-def fetch_klines(
-    symbol: str,
-    interval: str = "1h",
-    limit: int = 200,
-) -> List[Dict[str, float]]:
-    """Return klines from cache when available, otherwise fetch from Binance."""
-    cached = _load_cached_klines(symbol, interval, limit)
-    if len(cached) >= limit:
-        return cached[-limit:]
-
-    klines = _request_klines_api(symbol, interval=interval, limit=limit)
-    _store_klines(symbol, interval, klines)
-    return klines
 
 
 def klines_to_dataframe(klines: List[Dict[str, float]]) -> pd.DataFrame:
@@ -247,59 +147,17 @@ def klines_to_dataframe(klines: List[Dict[str, float]]) -> pd.DataFrame:
     return df.set_index("close_time").sort_index()
 
 
-def _ema(series: pd.Series, span: int) -> pd.Series:
-    return series.ewm(span=span, adjust=False).mean()
-
-
-def _bollinger(df: pd.DataFrame, window: int = 20, num_std: int = 2):
-    mid = df["close"].rolling(window).mean()
-    std = df["close"].rolling(window).std()
-    upper = mid + num_std * std
-    lower = mid - num_std * std
-    return mid, upper, lower
-
-
-def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
-    ema_fast = _ema(series, fast)
-    ema_slow = _ema(series, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = _ema(macd_line, signal)
-    hist = macd_line - signal_line
-    return macd_line, signal_line, hist
-
-
-def _kdj(df: pd.DataFrame, window: int = 9, smooth: int = 3):
-    low_min = df["low"].rolling(window).min()
-    high_max = df["high"].rolling(window).max()
-    rsv = (df["close"] - low_min) / (high_max - low_min)
-    rsv = (rsv.replace([np.inf, -np.inf], np.nan).fillna(0) * 100).clip(0, 100)
-    k = rsv.ewm(alpha=1 / smooth, adjust=False).mean()
-    d = k.ewm(alpha=1 / smooth, adjust=False).mean()
-    j = 3 * k - 2 * d
-    return k, d, j
-
-
-def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Append a curated indicator set to the dataframe."""
+def ensure_indicator_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure indicator columns exist on the dataframe.
+    The actual indicator calculation happens in the fetcher when data is ingested.
+    """
     if df.empty:
         return df
-
     df = df.copy()
-    df["ema_5"] = _ema(df["close"], 5)
-    df["ema_10"] = _ema(df["close"], 10)
-    df["ema_20"] = _ema(df["close"], 20)
-    macd_line, signal_line, hist = _macd(df["close"])
-    df["macd"] = macd_line
-    df["macd_signal"] = signal_line
-    df["macd_hist"] = hist
-    mid, upper, lower = _bollinger(df)
-    df["boll_mid"] = mid
-    df["boll_upper"] = upper
-    df["boll_lower"] = lower
-    k, d, j = _kdj(df)
-    df["kdj_k"] = k
-    df["kdj_d"] = d
-    df["kdj_j"] = j
+    for col in INDICATOR_COLUMNS:
+        if col not in df.columns:
+            df[col] = math.nan
     return df
 
 
@@ -409,8 +267,8 @@ def get_market_snapshot(
     interval: str = "1h",
     limit: int = 240,
 ) -> str:
-    klines = fetch_klines(symbol, interval=interval, limit=limit)
-    df = compute_indicators(klines_to_dataframe(klines))
+    klines = get_cached_klines(symbol, interval=interval, limit=limit)
+    df = ensure_indicator_data(klines_to_dataframe(klines))
     return summarize_market(df, symbol=symbol, interval=interval)
 
 
@@ -420,8 +278,8 @@ def get_indicator_readout(
     indicators: Optional[List[str]] = None,
     limit: int = 240,
 ) -> str:
-    klines = fetch_klines(symbol, interval=interval, limit=limit)
-    df = compute_indicators(klines_to_dataframe(klines))
+    klines = get_cached_klines(symbol, interval=interval, limit=limit)
+    df = ensure_indicator_data(klines_to_dataframe(klines))
     if df.empty:
         return f"No indicator data for {symbol}."
 
@@ -529,8 +387,8 @@ def get_support_resistance_levels(
     """
     Return structured support/resistance information for downstream agents.
     """
-    klines = fetch_klines(symbol, interval=interval, limit=limit)
-    df = compute_indicators(klines_to_dataframe(klines))
+    klines = get_cached_klines(symbol, interval=interval, limit=limit)
+    df = ensure_indicator_data(klines_to_dataframe(klines))
     base: Dict[str, Any] = {
         "symbol": symbol,
         "interval": interval,
@@ -601,26 +459,3 @@ def get_support_resistance_levels(
         },
     }
     return base
-
-
-def sync_binance_pairs(
-    symbols: List[str],
-    intervals: List[str],
-    limit: int = 500,
-) -> Dict[str, Any]:
-    """Refresh cached klines for multiple symbol/interval combinations."""
-    results: Dict[str, Any] = {}
-    for symbol in symbols:
-        sym_summary: Dict[str, Any] = {}
-        for interval in intervals:
-            try:
-                klines = _request_klines_api(symbol, interval=interval, limit=limit)
-                _store_klines(symbol, interval, klines)
-                sym_summary[interval] = {
-                    "count": len(klines),
-                    "latest_close": klines[-1]["close_time"] if klines else None,
-                }
-            except Exception as exc:  # pylint: disable=broad-except
-                sym_summary[interval] = {"error": str(exc)}
-        results[symbol.upper()] = sym_summary
-    return results

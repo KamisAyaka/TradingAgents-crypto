@@ -1,3 +1,5 @@
+"""Odaily 抓取器入口，负责定时同步快讯与文章。"""
+
 import asyncio
 import logging
 import os
@@ -9,7 +11,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from tradingagents.dataflows.odaily import sync_articles, sync_newsflash
+from fetchers.odaily_fetcher import sync_articles, sync_newsflash
 
 
 logging.basicConfig(
@@ -20,16 +22,16 @@ logger = logging.getLogger("odaily-runner")
 
 
 async def _run_task(name: str, interval_seconds: int, func) -> None:
-    """Run a sync function periodically."""
+    """按固定间隔运行同步函数，并记录耗时及异常。"""
     while True:
         try:
             start = datetime.utcnow()
-            logger.info("Starting %s sync", name)
+            logger.info("开始执行 %s 同步任务", name)
             func()
             elapsed = (datetime.utcnow() - start).total_seconds()
-            logger.info("Completed %s sync in %.2f seconds", name, elapsed)
+            logger.info("%s 同步完成，用时 %.2f 秒", name, elapsed)
         except Exception as exc:  # pylint: disable=broad-except
-            logger.exception("Error during %s sync: %s", name, exc)
+            logger.exception("%s 同步出错: %s", name, exc)
 
         await asyncio.sleep(interval_seconds)
 
@@ -38,7 +40,7 @@ async def run_loop(
     newsflash_interval: int = 900,
     article_interval: int = 3600,
 ) -> None:
-    """Run newsflash and article sync loops concurrently."""
+    """并发运行快讯与文章的同步循环。"""
     await asyncio.gather(
         _run_task("newsflash", newsflash_interval, sync_newsflash),
         _run_task("articles", article_interval, sync_articles),
@@ -50,13 +52,12 @@ def main(
     article_interval: Optional[int] = None,
 ) -> None:
     """
-    Entry point for running Odaily fetcher in parallel loops.
-    Set custom intervals (seconds) via parameters; defaults are 5 min for newsflash and 15 min for articles.
+    脚本入口：可传入自定义的同步间隔（秒），默认快讯 900 秒、文章 3600 秒。
     """
     nf_interval = newsflash_interval or 900
     art_interval = article_interval or 3600
     logger.info(
-        "Launching Odaily fetcher (newsflash every %ss, articles every %ss)",
+        "启动 Odaily fetcher（快讯 %ss/次，文章 %ss/次）",
         nf_interval,
         art_interval,
     )
