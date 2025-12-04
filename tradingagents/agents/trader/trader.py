@@ -5,7 +5,7 @@ import json
 
 def create_trader(llm, memory):
     def trader_node(state, name):
-        company_name = state["company_of_interest"]
+        company_name = state["asset_of_interest"]
         investment_plan = state["investment_plan"]
         market_research_report = state["market_report"]
         newsflash_report = state["newsflash_report"]
@@ -23,13 +23,13 @@ def create_trader(llm, memory):
 
         context = {
             "role": "user",
-            "content": f"Based on a comprehensive analysis by a team of crypto analysts, here is an investment plan tailored for {company_name}. This plan incorporates insights from current technical market trends, Odaily news flashes, and long-form macro/fundamental narratives. Use this plan as a foundation for evaluating your next trading decision.\n\nProposed Investment Plan: {investment_plan}\n\nLeverage these insights to make an informed and strategic decision.",
+            "content": f"以下是加密市场分析团队基于多维研究为 {company_name} 定制的投资方案，已综合技术面、Odaily 快讯与长线基本面叙事。请把这份方案作为制定下一步交易决策的依据。\n\n推荐投资方案：{investment_plan}\n\n请充分利用这些洞见，做出信息充分、策略明确的决定。",
         }
 
         messages = [
             {
                 "role": "system",
-                "content": f"""You are a trading agent analyzing market data to make investment decisions. Based on your analysis, provide a specific recommendation to buy, sell, or hold. End with a firm decision and always conclude your response with 'FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL**' to confirm your recommendation. Do not forget to utilize lessons from past decisions to learn from your mistakes. Here is some reflections from similar situatiosn you traded in and the lessons learned: {past_memory_str}""",
+                "content": f"""你是一名交易执行代理，需要结合市场数据与经验教训给出明确的买入、卖出或观望建议。请在充分分析后输出明确立场，并以“FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL**”结尾确认推荐方向。务必参考过往类似情境的反思，避免重蹈覆辙。以下是你的历史经验与总结：{past_memory_str}""",
             },
             context,
         ]

@@ -1,7 +1,6 @@
 # TradingAgents/graph/setup.py
 
 from typing import Dict, Any
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph, START
 from langgraph.prebuilt import ToolNode
 
@@ -16,8 +15,8 @@ class GraphSetup:
 
     def __init__(
         self,
-        quick_thinking_llm: ChatOpenAI,
-        deep_thinking_llm: ChatOpenAI,
+        quick_thinking_llm: Any,
+        deep_thinking_llm: Any,
         tool_nodes: Dict[str, ToolNode],
         bull_memory,
         bear_memory,
@@ -27,8 +26,8 @@ class GraphSetup:
         conditional_logic: ConditionalLogic,
     ):
         """Initialize with required components."""
-        self.quick_thinking_llm = quick_thinking_llm
-        self.deep_thinking_llm = deep_thinking_llm
+        self.quick_thinking_llm: Any = quick_thinking_llm
+        self.deep_thinking_llm: Any = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.bull_memory = bull_memory
         self.bear_memory = bear_memory
@@ -46,15 +45,15 @@ class GraphSetup:
             selected_analysts (list): List of analyst types to include. Options are:
                 - "market": Crypto market/technical analyst
                 - "newsflash": Odaily short-form news analyst
-                - "longform": Odaily long-form research analyst
+                - "longform": Cached Odaily long-form research loader
         """
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
 
         # Create analyst nodes
-        analyst_nodes = {}
-        delete_nodes = {}
-        tool_nodes = {}
+        analyst_nodes: Dict[str, Any] = {}
+        delete_nodes: Dict[str, Any] = {}
+        tool_nodes: Dict[str, ToolNode] = {}
 
         if "market" in selected_analysts:
             analyst_nodes["market"] = create_crypto_market_analyst(
@@ -71,11 +70,8 @@ class GraphSetup:
             tool_nodes["newsflash"] = self.tool_nodes["newsflash"]
 
         if "longform" in selected_analysts:
-            analyst_nodes["longform"] = create_crypto_longform_analyst(
-                self.quick_thinking_llm
-            )
+            analyst_nodes["longform"] = create_longform_cache_loader()
             delete_nodes["longform"] = create_msg_delete()
-            tool_nodes["longform"] = self.tool_nodes["longform"]
 
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(
@@ -106,7 +102,8 @@ class GraphSetup:
             workflow.add_node(
                 f"Msg Clear {analyst_type.capitalize()}", delete_nodes[analyst_type]
             )
-            workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
+            if analyst_type in tool_nodes:
+                workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
 
         # Add other nodes
         workflow.add_node("Bull Researcher", bull_researcher_node)
@@ -118,31 +115,87 @@ class GraphSetup:
         workflow.add_node("Safe Analyst", safe_analyst)
         workflow.add_node("Risk Judge", risk_manager_node)
 
-        # Define edges
-        # Start with the first analyst
-        first_analyst = selected_analysts[0]
-        workflow.add_edge(START, f"{first_analyst.capitalize()} Analyst")
+        # Define analyst execution order
+        parallel_analysts = [
+            analyst
+            for analyst in ["market", "newsflash"]
+            if analyst in selected_analysts
+        ]
+        remaining_analysts = [
+            analyst for analyst in selected_analysts if analyst not in parallel_analysts
+        ]
 
-        # Connect analysts in sequence
-        for i, analyst_type in enumerate(selected_analysts):
-            current_analyst = f"{analyst_type.capitalize()} Analyst"
+        # Helper to wire tool-driven analysts
+        def _wire_tool_driven(analyst_type: str):
+            cap_name = analyst_type.capitalize()
+            current_analyst = f"{cap_name} Analyst"
             current_tools = f"tools_{analyst_type}"
-            current_clear = f"Msg Clear {analyst_type.capitalize()}"
+            current_clear = f"Msg Clear {cap_name}"
 
-            # Add conditional edges for current analyst
             workflow.add_conditional_edges(
                 current_analyst,
                 getattr(self.conditional_logic, f"should_continue_{analyst_type}"),
                 [current_tools, current_clear],
             )
             workflow.add_edge(current_tools, current_analyst)
+            return current_clear
 
-            # Connect to next analyst or to Bull Researcher if this is the last analyst
-            if i < len(selected_analysts) - 1:
-                next_analyst = f"{selected_analysts[i+1].capitalize()} Analyst"
-                workflow.add_edge(current_clear, next_analyst)
+        # Parallel stage wiring
+        if parallel_analysts:
+            gate_node_name = "Parallel Analyst Gate"
+            wait_node_name = "Parallel Analyst Wait"
+            workflow.add_node(gate_node_name, lambda state: {})
+            workflow.add_node(wait_node_name, lambda state: {})
+
+            next_after_parallel = (
+                f"{remaining_analysts[0].capitalize()} Analyst"
+                if remaining_analysts
+                else "Bull Researcher"
+            )
+
+            def _should_release_parallel(state: AgentState):
+                if "market" in parallel_analysts and not state["market_report"]:
+                    return "wait"
+                if "newsflash" in parallel_analysts and not state["newsflash_report"]:
+                    return "wait"
+                return "proceed"
+
+            for analyst_type in parallel_analysts:
+                current_clear = _wire_tool_driven(analyst_type)
+                workflow.add_edge(START, f"{analyst_type.capitalize()} Analyst")
+                workflow.add_edge(current_clear, gate_node_name)
+
+            workflow.add_conditional_edges(
+                gate_node_name,
+                _should_release_parallel,
+                {
+                    "proceed": next_after_parallel,
+                    "wait": wait_node_name,
+                },
+            )
+        elif remaining_analysts:
+            workflow.add_edge(START, f"{remaining_analysts[0].capitalize()} Analyst")
+        else:
+            workflow.add_edge(START, "Bull Researcher")
+
+        # Sequential analysts after the parallel stage
+        for idx, analyst_type in enumerate(remaining_analysts):
+            cap_name = analyst_type.capitalize()
+            current_node = f"{cap_name} Analyst"
+            next_node = (
+                f"{remaining_analysts[idx+1].capitalize()} Analyst"
+                if idx < len(remaining_analysts) - 1
+                else "Bull Researcher"
+            )
+
+            if analyst_type in ["market", "newsflash"]:
+                current_clear = _wire_tool_driven(analyst_type)
+                workflow.add_edge(current_clear, next_node)
+            elif analyst_type == "longform":
+                workflow.add_edge(current_node, f"Msg Clear {cap_name}")
+                workflow.add_edge(f"Msg Clear {cap_name}", next_node)
             else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                workflow.add_edge(current_node, next_node)
 
         # Add remaining edges
         workflow.add_conditional_edges(

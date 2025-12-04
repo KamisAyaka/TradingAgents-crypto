@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import os
 import random
 from math import sqrt
 
@@ -72,19 +73,41 @@ class _SimpleMemoryCollection:
 
 class FinancialSituationMemory:
     def __init__(self, name, config):
-        if config["backend_url"] == "http://localhost:11434/v1":
-            self.embedding = "nomic-embed-text"
+        backend_url = config.get("backend_url")
+        dashscope_api_key = os.getenv("DASHSCOPE_API_KEY")
+        dashscope_base_url = os.getenv(
+            "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        dashscope_model = os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v4")
+
+        self.client = None
+        if dashscope_api_key:
+            # 优先使用阿里云百炼的兼容模式 API，便于国内测试
+            self.embedding = dashscope_model
+            try:
+                self.client = OpenAI(
+                    api_key=dashscope_api_key,
+                    base_url=dashscope_base_url,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "无法初始化阿里云 embedding 客户端，改用本地降级方案: %s", exc
+                )
         else:
-            self.embedding = "text-embedding-3-small"
-        try:
-            self.client = OpenAI(base_url=config["backend_url"])
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("无法初始化远程 embedding 客户端，改用本地降级方案: %s", exc)
-            self.client = None
+            if backend_url == "http://localhost:11434/v1":
+                self.embedding = "nomic-embed-text"
+            else:
+                self.embedding = "text-embedding-3-small"
+            try:
+                self.client = OpenAI(base_url=backend_url) if backend_url else OpenAI()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("无法初始化远程 embedding 客户端，改用本地降级方案: %s", exc)
+
         self.situation_collection = None
         self.chroma_client = None
         self._fallback_dim = 256
         self._remote_embeddings_enabled = self.client is not None
+        self._max_remote_input_len = 8192
 
         if _CHROMA_AVAILABLE:
             try:
@@ -105,10 +128,20 @@ class FinancialSituationMemory:
 
     def get_embedding(self, text):
         """Get OpenAI embedding for a text"""
+        clean_text = (text or "").strip()
+        if not clean_text:
+            clean_text = "空上下文，无可供嵌入的有效内容。"
+        elif len(clean_text) > self._max_remote_input_len:
+            logger.warning(
+                "嵌入文本长度超出 %d 字符，已自动截断以适配 DashScope 限制。",
+                self._max_remote_input_len,
+            )
+            clean_text = clean_text[: self._max_remote_input_len]
+
         if self._remote_embeddings_enabled and self.client is not None:
             try:
                 response = self.client.embeddings.create(
-                    model=self.embedding, input=text
+                    model=self.embedding, input=clean_text
                 )
                 return response.data[0].embedding
             except OpenAIError as exc:
@@ -123,7 +156,7 @@ class FinancialSituationMemory:
                 )
                 self._remote_embeddings_enabled = False
 
-        return self._fallback_embedding(text)
+        return self._fallback_embedding(clean_text)
 
     def _fallback_embedding(self, text: str):
         """Deterministic hash-based embedding to avoid external quotas."""

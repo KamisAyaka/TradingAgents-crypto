@@ -21,25 +21,24 @@ def create_bear_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
+        prompt = f"""你是一名专注加密货币领域的看跌分析师，需要陈述反对投资该代币/项目的观点。你的目标是提出一套逻辑严密的论点，强调链上与链下的风险、挑战和负面信号。善用提供的研究与数据，凸显潜在缺陷，并有效反驳看涨论点。
 
-Key points to focus on:
+重点关注：
 
-- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.
-- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.
-- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
-- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
-- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
+- 风险与挑战：指出市场饱和、经济逆风、合规压力等可能阻碍代币表现的因素。
+- 负面指标：结合链上数据、市场趋势、资金流动、社区情绪或近期负面新闻，为你的立场提供证据。
+- 回应看涨观点：以具体数据和严谨推理批判看涨论点，揭示其中的漏洞或过度乐观假设。
+- 互动性：以对话式口吻呈现观点，直接回应看涨分析师的论据，进行辩论，而不是简单罗列事实。
 
-Resources available:
+可用资源：
 
-Market research report: {market_research_report}
-Odaily newsflash report: {newsflash_report}
-Long-form narrative report: {longform_report}
-Conversation history of the debate: {history}
-Last bull argument: {current_response}
-Reflections from similar situations and lessons learned: {past_memory_str}
-Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the stock. You must also address reflections and learn from lessons and mistakes you made in the past.
+市场技术分析：{market_research_report}
+Odaily 快讯：{newsflash_report}
+长篇叙事报告：{longform_report}
+辩论对话记录：{history}
+最近一次看涨观点：{current_response}
+相似情境的反思与经验：{past_memory_str}
+使用以上信息，输出具有说服力的看跌论点，反驳看涨方的主张，并展开富有动态性的辩论，凸显投资该加密货币的风险与弱点。同时务必吸取过去的经验教训，回应相关反思。
 """
 
         response = llm.invoke(prompt)

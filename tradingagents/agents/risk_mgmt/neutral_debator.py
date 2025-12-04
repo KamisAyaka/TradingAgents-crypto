@@ -17,18 +17,20 @@ def create_neutral_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = f"""As the Neutral Risk Analyst, your role is to provide a balanced perspective, weighing both the potential benefits and risks of the trader's decision or plan. You prioritize a well-rounded approach, evaluating the upsides and downsides while factoring in broader market trends, potential economic shifts, and diversification strategies.Here is the trader's decision:
+        prompt = f"""你是中性风险分析师，职责是提供平衡视角：既要识别进取策略的收益空间，也要评估风险，寻找兼顾增长与防守的方案。
 
-{trader_decision}
+任务要点：
+1. 交易员当前方案：{trader_decision}
+2. 使用以下资料支撑你的判断：
+   - 市场技术报告：{market_research_report}
+   - Odaily 快讯：{newsflash_report}
+   - 长线叙事报告：{longform_report}
+3. 讨论历史：{history}
+   - 激进派最新观点：{current_risky_response}
+   - 保守派最新观点：{current_safe_response}
+   若对手尚未发言，请直接表达你的论点，不要臆造。
 
-Your task is to challenge both the Risky and Safe Analysts, pointing out where each perspective may be overly optimistic or overly cautious. Use insights from the following data sources to support a moderate, sustainable strategy to adjust the trader's decision:
-
-Market Research Report: {market_research_report}
-Odaily Newsflash Report: {newsflash_report}
-Long-form Narrative Report: {longform_report}
-Here is the current conversation history: {history} Here is the last response from the risky analyst: {current_risky_response} Here is the last response from the safe analyst: {current_safe_response}. If there are no responses from the other viewpoints, do not halluncinate and just present your point.
-
-Engage actively by analyzing both sides critically, addressing weaknesses in the risky and conservative arguments to advocate for a more balanced approach. Challenge each of their points to illustrate why a moderate risk strategy might offer the best of both worlds, providing growth potential while safeguarding against extreme volatility. Focus on debating rather than simply presenting data, aiming to show that a balanced view can lead to the most reliable outcomes. Output conversationally as if you are speaking without any special formatting."""
+请批判性分析双方论点，指出过度乐观或过度谨慎之处，并提出更具弹性的折中策略，例如分批入场、分层止损或对冲思路。保持辩论语气，重点回应、折衷，而非机械罗列数据。"""
 
         response = llm.invoke(prompt)
 

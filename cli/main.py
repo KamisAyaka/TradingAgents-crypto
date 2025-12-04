@@ -295,7 +295,7 @@ def update_display(layout, spinner_text=None):
         # Convert content to string if it's not already
         content_str = content
         if isinstance(content, list):
-            # Handle list of content blocks (Anthropic format)
+            # Handle list of content blocks from streaming responses
             text_parts = []
             for item in content:
                 if isinstance(item, dict):
@@ -701,7 +701,7 @@ def extract_content_string(content):
     if isinstance(content, str):
         return content
     elif isinstance(content, list):
-        # Handle Anthropic's list format
+        # Handle list-based content format
         text_parts = []
         for item in content:
             if isinstance(item, dict):

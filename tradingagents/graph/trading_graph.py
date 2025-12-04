@@ -3,14 +3,14 @@
 import os
 from pathlib import Path
 import json
-from datetime import date
-from typing import Dict, Any, Tuple, List, Optional
+from datetime import date, datetime
+from typing import Dict, Any, Tuple, List, Optional, cast
 
 from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langgraph.prebuilt import ToolNode
+from pydantic import SecretStr
 
 from tradingagents.agents import *
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -45,7 +45,7 @@ class TradingAgentsGraph:
         self,
         selected_analysts=["market", "newsflash", "longform"],
         debug=False,
-        config: Dict[str, Any] = None,
+        config: Optional[Dict[str, Any]] = None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -56,6 +56,9 @@ class TradingAgentsGraph:
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
+        self.suppress_console_output = self.config.get("suppress_console_output", False)
+        self.text_log_enabled = self.config.get("text_log_enabled", False)
+        self.text_log_dir = self.config.get("text_log_dir")
 
         # Create cache directories if needed
         os.makedirs(
@@ -98,7 +101,10 @@ class TradingAgentsGraph:
         self.tool_nodes = self._create_tool_nodes()
 
         # Initialize components
-        self.conditional_logic = ConditionalLogic()
+        self.conditional_logic = ConditionalLogic(
+            max_debate_rounds=self.config.get("max_debate_rounds", 1),
+            max_risk_discuss_rounds=self.config.get("max_risk_discuss_rounds", 1),
+        )
         self.graph_setup = GraphSetup(
             self.quick_thinking_llm,
             self.deep_thinking_llm,
@@ -111,9 +117,9 @@ class TradingAgentsGraph:
             self.conditional_logic,
         )
 
-        self.propagator = Propagator()
-        self.reflector = Reflector(self.quick_thinking_llm)
-        self.signal_processor = SignalProcessor(self.quick_thinking_llm)
+        self.propagator = Propagator(self.config.get("max_recur_limit", 100))
+        self.reflector = Reflector(self.quick_thinking_llm) # type: ignore
+        self.signal_processor = SignalProcessor(self.quick_thinking_llm) # type: ignore
 
         # State tracking
         self.curr_state = None
@@ -137,9 +143,7 @@ class TradingAgentsGraph:
                 raise ValueError(
                     "DEEPSEEK_API_KEY 未设置，无法初始化 DeepSeek LLM。请在 .env 中提供。"
                 )
-            return ChatOpenAI(model=model_name, base_url=base, api_key=api_key)
-        if provider == "anthropic":
-            return ChatAnthropic(model=model_name, base_url=backend_url)
+            return ChatOpenAI(model=model_name, base_url=base, api_key=SecretStr(api_key))
         if provider == "google":
             return ChatGoogleGenerativeAI(model=model_name)
         raise ValueError(f"Unsupported LLM provider: {provider}")
@@ -172,22 +176,28 @@ class TradingAgentsGraph:
         self.ticker = company_name
 
         # Initialize state
-        init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date
+        init_agent_state = cast(
+            AgentState,
+            self.propagator.create_initial_state(company_name, trade_date),
         )
         args = self.propagator.get_graph_args()
 
+        debug_transcript: List[Dict[str, Any]] = []
+
         if self.debug:
-            # Debug mode with tracing
+            # Debug mode collects every streamed message for later logging.
             trace = []
             for chunk in self.graph.stream(init_agent_state, **args):
                 if len(chunk["messages"]) == 0:
-                    pass
-                else:
-                    chunk["messages"][-1].pretty_print()
-                    trace.append(chunk)
+                    continue
+                last_message = chunk["messages"][-1]
+                debug_transcript.append(self._serialize_message(last_message))
+                trace.append(chunk)
 
-            final_state = trace[-1]
+            if trace:
+                final_state = trace[-1]
+            else:
+                final_state = self.graph.invoke(init_agent_state, **args)
         else:
             # Standard mode without tracing
             final_state = self.graph.invoke(init_agent_state, **args)
@@ -196,15 +206,18 @@ class TradingAgentsGraph:
         self.curr_state = final_state
 
         # Log state
-        self._log_state(trade_date, final_state)
+        log_dir = self._log_state(trade_date, final_state)
+
+        if self.debug and debug_transcript:
+            self._write_debug_transcript(trade_date, debug_transcript, log_dir)
 
         # Return decision and processed signal
         return final_state, self.process_signal(final_state["final_trade_decision"])
 
     def _log_state(self, trade_date, final_state):
-        """Log the final state to a JSON file."""
+        """Log the final state to a JSON file and return the log directory."""
         self.log_states_dict[str(trade_date)] = {
-            "company_of_interest": final_state["company_of_interest"],
+            "asset_of_interest": final_state["asset_of_interest"],
             "trade_date": final_state["trade_date"],
             "market_report": final_state["market_report"],
             "newsflash_report": final_state["newsflash_report"],
@@ -240,7 +253,10 @@ class TradingAgentsGraph:
             f"eval_results/{self.ticker}/TradingAgentsStrategy_logs/full_states_log_{trade_date}.json",
             "w",
         ) as f:
-            json.dump(self.log_states_dict, f, indent=4)
+            json.dump(self.log_states_dict, f, indent=4, ensure_ascii=False)
+
+        self._write_text_log(trade_date, final_state, directory)
+        return directory
 
     def reflect_and_remember(self, returns_losses):
         """Reflect on decisions and update memory based on returns."""
@@ -258,6 +274,120 @@ class TradingAgentsGraph:
         )
         self.reflector.reflect_risk_manager(
             self.curr_state, returns_losses, self.risk_manager_memory
+        )
+
+    def _write_text_log(self, trade_date, final_state, base_dir: Path):
+        """Persist a human-readable markdown transcript when enabled."""
+        if not self.text_log_enabled:
+            return
+
+        log_dir = (
+            Path(self.text_log_dir)
+            if self.text_log_dir
+            else base_dir
+        )
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%H%M%S")
+        file_path = log_dir / f"analysis_transcript_{trade_date}_{timestamp}.md"
+
+        market_report = final_state.get("market_report") or ""
+        newsflash_report = final_state.get("newsflash_report") or ""
+        longform_report = final_state.get("longform_report") or ""
+        invest_state = final_state.get("investment_debate_state", {})
+        risk_state = final_state.get("risk_debate_state", {})
+
+        sections = [
+            f"# TradingAgents 分析记录 - {trade_date}",
+            f"- 资产：{final_state.get('asset_of_interest', '')}",
+            f"- 最终交易决定：{final_state.get('final_trade_decision', '')}",
+            f"- 交易计划：{final_state.get('trader_investment_plan', '')}",
+        ]
+
+        if market_report:
+            sections.append("## 市场技术分析\n" + market_report)
+        if newsflash_report:
+            sections.append("## 快讯分析\n" + newsflash_report)
+        if longform_report:
+            sections.append("## 长文研究（缓存）\n" + longform_report)
+
+        if invest_state.get("history"):
+            sections.append("## 看涨/看跌辩论记录\n" + invest_state["history"])
+        if final_state.get("investment_plan"):
+            sections.append("## 研究经理方案\n" + final_state["investment_plan"])
+        if final_state.get("trader_investment_plan"):
+            sections.append("## 交易员计划\n" + final_state["trader_investment_plan"])
+        if risk_state.get("history"):
+            sections.append("## 风险讨论记录\n" + risk_state["history"])
+        if final_state.get("final_trade_decision"):
+            sections.append("## 最终裁决\n" + final_state["final_trade_decision"])
+
+        file_path.write_text("\n\n".join(sections), encoding="utf-8")
+
+    def _serialize_message(self, message):
+        """Best-effort serialization of LangChain messages for JSON logging."""
+
+        def _safe_content(content):
+            if isinstance(content, (str, int, float, type(None))):
+                return content
+            try:
+                json.dumps(content)
+                return content
+            except TypeError:
+                return str(content)
+
+        entry: Dict[str, Any] = {
+            "message_type": getattr(message, "type", message.__class__.__name__),
+            "name": getattr(message, "name", None),
+            "content": _safe_content(message.content),
+        }
+
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            serialized_calls = []
+            for call in tool_calls:
+                if isinstance(call, dict):
+                    serialized_calls.append(call)
+                else:
+                    serialized_calls.append(
+                        {
+                            "id": getattr(call, "id", None),
+                            "name": getattr(call, "name", None),
+                            "args": _safe_content(
+                                getattr(call, "args", getattr(call, "arguments", None))
+                            ),
+                        }
+                    )
+            entry["tool_calls"] = serialized_calls
+
+        additional = getattr(message, "additional_kwargs", None)
+        if additional:
+            entry["additional_kwargs"] = additional
+
+        metadata = getattr(message, "response_metadata", None)
+        if metadata:
+            entry["response_metadata"] = metadata
+
+        return entry
+
+    def _write_debug_transcript(
+        self,
+        trade_date: str,
+        transcript: List[Dict[str, Any]],
+        base_dir: Path,
+    ) -> None:
+        """Persist the streamed debug transcript to JSON for later review."""
+
+        log_dir = (
+            Path(self.config.get("debug_log_dir"))
+            if self.config.get("debug_log_dir")
+            else base_dir
+        )
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%H%M%S")
+        file_path = log_dir / f"debug_transcript_{trade_date}_{timestamp}.json"
+        file_path.write_text(
+            json.dumps(transcript, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
 
     def process_signal(self, full_signal):

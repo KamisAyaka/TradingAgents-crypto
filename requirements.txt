@@ -2,8 +2,9 @@ typing-extensions
 langchain-openai
 langchain-experimental
 langgraph
-langchain-anthropic
 langchain-google-genai
+langchain-community
+dashscope
 pandas
 feedparser
 requests

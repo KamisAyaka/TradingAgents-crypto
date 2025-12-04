@@ -17,18 +17,21 @@ def create_risky_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = f"""As the Risky Risk Analyst, your role is to actively champion high-reward, high-risk opportunities, emphasizing bold strategies and competitive advantages. When evaluating the trader's decision or plan, focus intently on the potential upside, growth potential, and innovative benefits—even when these come with elevated risk. Use the provided market data and sentiment analysis to strengthen your arguments and challenge the opposing views. Specifically, respond directly to each point made by the conservative and neutral analysts, countering with data-driven rebuttals and persuasive reasoning. Highlight where their caution might miss critical opportunities or where their assumptions may be overly conservative. Here is the trader's decision:
+        prompt = f"""你是激进型风险分析师，职责是在评估交易员方案时强调高收益、高风险策略的潜在价值。请聚焦潜在上行、外溢效应，即便这些机会意味着承受更高波动。
 
-{trader_decision}
+需要你完成的任务：
+1. 直接回应保守和中性分析师的观点，逐条指出他们可能错失的机会或过度谨慎的假设。
+2. 结合以下资料，用数据与说服性论据强化立场：
+   - 市场技术报告：{market_research_report}
+   - Odaily 快讯：{newsflash_report}
+   - 长线叙事报告：{longform_report}
+3. 明确交易员当前方案：{trader_decision}
+4. 当前讨论历史：{history}
+   - 最近一次保守派观点：{current_safe_response}
+   - 最近一次中性派观点：{current_neutral_response}
+   如若对方尚未发言，请勿臆造，直接陈述你的看法即可。
 
-Your task is to create a compelling case for the trader's decision by questioning and critiquing the conservative and neutral stances to demonstrate why your high-reward perspective offers the best path forward. Incorporate insights from the following sources into your arguments:
-
-Market Research Report: {market_research_report}
-Odaily Newsflash Report: {newsflash_report}
-Long-form Narrative Report: {longform_report}
-Here is the current conversation history: {history} Here are the last arguments from the conservative analyst: {current_safe_response} Here are the last arguments from the neutral analyst: {current_neutral_response}. If there are no responses from the other viewpoints, do not halluncinate and just present your point.
-
-Engage actively by addressing any specific concerns raised, refuting the weaknesses in their logic, and asserting the benefits of risk-taking to outpace market norms. Maintain a focus on debating and persuading, not just presenting data. Challenge each counterpoint to underscore why a high-risk approach is optimal. Output conversationally as if you are speaking without any special formatting."""
+在回复时请保持辩论式语气，聚焦于反驳与说服：指出其逻辑漏洞，强调进取策略如何抢占赛道或提升收益空间，并确保输出自然对话风格、无特别格式要求。"""
 
         response = llm.invoke(prompt)
 

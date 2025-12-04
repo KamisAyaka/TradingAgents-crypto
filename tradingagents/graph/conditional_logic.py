@@ -15,7 +15,7 @@ class ConditionalLogic:
         """Determine if market analysis should continue."""
         messages = state["messages"]
         last_message = messages[-1]
-        if last_message.tool_calls:
+        if getattr(last_message, "tool_calls", None):
             return "tools_market"
         return "Msg Clear Market"
 
@@ -23,16 +23,13 @@ class ConditionalLogic:
         """Determine if newsflash analysis should continue."""
         messages = state["messages"]
         last_message = messages[-1]
-        if last_message.tool_calls:
+        if getattr(last_message, "tool_calls", None):
             return "tools_newsflash"
         return "Msg Clear Newsflash"
 
     def should_continue_longform(self, state: AgentState):
         """Determine if longform research analysis should continue."""
-        messages = state["messages"]
-        last_message = messages[-1]
-        if last_message.tool_calls:
-            return "tools_longform"
+        # Cached longform loader does not issue tool calls; always proceed to cleanup.
         return "Msg Clear Longform"
 
     def should_continue_debate(self, state: AgentState) -> str:

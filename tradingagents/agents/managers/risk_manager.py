@@ -5,7 +5,7 @@ import json
 def create_risk_manager(llm, memory):
     def risk_manager_node(state) -> dict:
 
-        company_name = state["company_of_interest"]
+        company_name = state["asset_of_interest"]
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
@@ -21,26 +21,26 @@ def create_risk_manager(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""As the Risk Management Judge and Debate Facilitator, your goal is to evaluate the debate between three risk analysts—Risky, Neutral, and Safe/Conservative—and determine the best course of action for the trader. Your decision must result in a clear recommendation: Buy, Sell, or Hold. Choose Hold only if strongly justified by specific arguments, not as a fallback when all sides seem valid. Strive for clarity and decisiveness.
+        prompt = f"""你是风控法官兼辩论主持人，需要审视激进、保守、中性三位风险分析师的讨论，为交易员提供最终的买入 / 卖出 / 观望结论。只有在有充分理由时才允许选择观望；请保持判断明确并具可执行性。
 
-Guidelines for Decision-Making:
-1. **Summarize Key Arguments**: Extract the strongest points from each analyst, focusing on relevance to the context.
-2. **Provide Rationale**: Support your recommendation with direct quotes and counterarguments from the debate.
-3. **Refine the Trader's Plan**: Start with the trader's original plan, **{trader_plan}**, and adjust it based on the analysts' insights.
-4. **Learn from Past Mistakes**: Use lessons from **{past_memory_str}** to address prior misjudgments and improve the decision you are making now to make sure you don't make a wrong BUY/SELL/HOLD call that loses money.
+决策指引：
+1. **萃取要点**：概括每位分析师最有力、最贴合当前情境的论据。
+2. **给出依据**：引用辩论中的关键论断或反驳，支撑你的立场。
+3. **调整交易方案**：以交易员原计划 **{trader_plan}** 为起点，根据本轮讨论进行必要的修订。
+4. **吸取历史教训**：参考以下反思 **{past_memory_str}**，避免重复过往失误，确保 buy/sell/hold 的判断更稳妥。
 
-Deliverables:
-- A clear and actionable recommendation: Buy, Sell, or Hold.
-- Detailed reasoning anchored in the debate and past reflections.
+输出要求：
+- 明确且可执行的结论：买入 / 卖出 / 观望。
+- 结合辩论要点与历史经验的详细理由。
 
 ---
 
-**Analysts Debate History:**  
+**风险辩论记录：**  
 {history}
 
 ---
 
-Focus on actionable insights and continuous improvement. Build on past lessons, critically evaluate all perspectives, and ensure each decision advances better outcomes."""
+请聚焦可执行性的建议，持续迭代你的风险管理思路。"""
 
         response = llm.invoke(prompt)
 

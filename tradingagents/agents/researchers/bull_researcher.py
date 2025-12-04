@@ -21,23 +21,22 @@ def create_bull_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
+        prompt = f"""你是一名专注加密货币领域的看涨分析师，负责为投资该代币提供支持。你的任务是构建一套有力且有据可依的论证，竞争优势与正面市场信号。善用提供的研究与数据，回应疑虑并有效反驳看跌观点。
 
-Key points to focus on:
-- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
-- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.
-- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
-- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
-- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
+重点关注：
+- 成长潜力：强调协议的市场机会、代币需求、生态扩张与可扩展性。
+- 正向指标：引用链上数据、资金流入、行业趋势及近期利好消息等证据。
+- 回应看跌观点：用具体数据与严谨推理分析看跌论点，充分回应疑虑，说明看涨观点为何更有说服力。
+- 互动性：以对话式口吻呈现论点，直接回应看跌分析师的观点，进行有效辩论，而非仅罗列数据。
 
-Resources available:
-Market research report: {market_research_report}
-Odaily newsflash report: {newsflash_report}
-Long-form narrative report: {longform_report}
-Conversation history of the debate: {history}
-Last bear argument: {current_response}
-Reflections from similar situations and lessons learned: {past_memory_str}
-Use this information to deliver a compelling bull argument, refute the bear's concerns, and engage in a dynamic debate that demonstrates the strengths of the bull position. You must also address reflections and learn from lessons and mistakes you made in the past.
+可用资源：
+市场技术分析：{market_research_report}
+Odaily 快讯：{newsflash_report}
+长篇叙事报告：{longform_report}
+辩论对话记录：{history}
+最近一次看跌观点：{current_response}
+相似情境的反思与经验：{past_memory_str}
+使用以上信息，输出具有说服力的看涨论点，反驳看跌方的顾虑，并展开富有动态性的辩论，彰显看涨立场的优势。同时务必吸取过去的经验教训，回应相关反思。
 """
 
         response = llm.invoke(prompt)

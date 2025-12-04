@@ -1,4 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage
 
 from tradingagents.agents.utils.crypto_market_tools import (
     get_crypto_market_data,
@@ -13,7 +14,7 @@ def create_crypto_market_analyst(llm):
 
     def crypto_market_node(state):
         current_date = state.get("trade_date", "Unknown date")
-        symbol = state.get("company_of_interest", "BTCUSDT")
+        symbol = state.get("asset_of_interest", "BTCUSDT")
 
         tools = [
             get_crypto_market_data,
@@ -41,11 +42,26 @@ def create_crypto_market_analyst(llm):
 
         prompt = prompt.partial(system_message=system_message, current_date=current_date, symbol=symbol)
         chain = prompt | llm.bind_tools(tools)
-        result = chain.invoke(state["messages"])
+
+        reminder = HumanMessage(
+            content="系统提醒：必须调用 get_crypto_market_data / get_support_resistance_levels 取得行情后再写分析。"
+        )
+        conversation = list(state["messages"])
+        result = None
+        max_attempts = 2
+
+        for _ in range(max_attempts):
+            result = chain.invoke(conversation)
+            if getattr(result, "tool_calls", None):
+                break
+            conversation = conversation + [result, reminder]
+
+        if result is None:
+            raise RuntimeError("Market analyst failed to generate a response")
 
         report = ""
-        if len(result.tool_calls) == 0:
-            report = result.content or ""
+        if not getattr(result, "tool_calls", None):
+            report = result.content or "【错误】未调用行情工具，无法生成市场分析。"
 
         return {
             "messages": [result],

@@ -18,18 +18,21 @@ def create_safe_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = f"""As the Safe/Conservative Risk Analyst, your primary objective is to protect assets, minimize volatility, and ensure steady, reliable growth. You prioritize stability, security, and risk mitigation, carefully assessing potential losses, economic downturns, and market volatility. When evaluating the trader's decision or plan, critically examine high-risk elements, pointing out where the decision may expose the firm to undue risk and where more cautious alternatives could secure long-term gains. Here is the trader's decision:
+        prompt = f"""你是保守型风险分析师，首要任务是守住资产安全、降低波动、维持稳定增长。请在评估交易员方案时，逐项识别高风险因素，说明潜在损失、宏观逆风或流动性风险。
 
-{trader_decision}
+具体要求：
+1. 回应激进与中性分析师的观点，指出他们忽视的威胁或对可持续性的缺失。
+2. 参考以下资料构建低风险或降杠杆方案：
+   - 市场技术报告：{market_research_report}
+   - Odaily 快讯：{newsflash_report}
+   - 长线叙事报告：{longform_report}
+3. 交易员当前方案：{trader_decision}
+4. 讨论记录：{history}
+   - 激进派最新观点：{current_risky_response}
+   - 中性派最新观点：{current_neutral_response}
+   如果对方没有发言，请勿虚构，直接陈述你的立场即可。
 
-Your task is to actively counter the arguments of the Risky and Neutral Analysts, highlighting where their views may overlook potential threats or fail to prioritize sustainability. Respond directly to their points, drawing from the following data sources to build a convincing case for a low-risk approach adjustment to the trader's decision:
-
-Market Research Report: {market_research_report}
-Odaily Newsflash Report: {newsflash_report}
-Long-form Narrative Report: {longform_report}
-Here is the current conversation history: {history} Here is the last response from the risky analyst: {current_risky_response} Here is the last response from the neutral analyst: {current_neutral_response}. If there are no responses from the other viewpoints, do not halluncinate and just present your point.
-
-Engage by questioning their optimism and emphasizing the potential downsides they may have overlooked. Address each of their counterpoints to showcase why a conservative stance is ultimately the safest path for the firm's assets. Focus on debating and critiquing their arguments to demonstrate the strength of a low-risk strategy over their approaches. Output conversationally as if you are speaking without any special formatting."""
+在回复中强调谨慎策略的优势：质疑乐观假设、凸显下行风险、给出更稳健的替代方案，并保持对话式口吻、集中辩论而不是单纯列数据。"""
 
         response = llm.invoke(prompt)
 

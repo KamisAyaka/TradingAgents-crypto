@@ -1,4 +1,5 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage
 
 from tradingagents.agents.utils.agent_utils import get_crypto_newsflash
 
@@ -10,7 +11,7 @@ def create_crypto_newsflash_analyst(llm):
 
     def crypto_newsflash_node(state):
         current_date = state.get("trade_date", "Unknown date")
-        asset = state.get("company_of_interest", "crypto market")
+        asset = state.get("asset_of_interest", "crypto market")
 
         tools = [get_crypto_newsflash]
 
@@ -35,11 +36,27 @@ def create_crypto_newsflash_analyst(llm):
 
         prompt = prompt.partial(system_message=system_message, current_date=current_date, asset=asset)
         chain = prompt | llm.bind_tools(tools)
-        result = chain.invoke(state["messages"])
+
+        # Force at least one attempt that issues a tool call so Odaily快讯数据一定被抓取。
+        reminder = HumanMessage(
+            content="系统提醒：你必须先调用 get_crypto_newsflash 工具获取快讯，再输出分析。"
+        )
+        conversation = list(state["messages"])
+        result = None
+        max_attempts = 2
+
+        for _ in range(max_attempts):
+            result = chain.invoke(conversation)
+            if getattr(result, "tool_calls", None):
+                break
+            conversation = conversation + [result, reminder]
+
+        if result is None:
+            raise RuntimeError("Newsflash analyst failed to generate a response")
 
         report = ""
-        if len(result.tool_calls) == 0:
-            report = result.content or ""
+        if not getattr(result, "tool_calls", None):
+            report = result.content or "【错误】未调用 get_crypto_newsflash 工具，无法生成快讯分析。"
 
         return {
             "messages": [result],

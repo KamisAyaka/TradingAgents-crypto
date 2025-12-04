@@ -10,9 +10,8 @@ load_dotenv()
 config = DEFAULT_CONFIG.copy()
 config["quick_llm_provider"] = "google"
 config["quick_think_llm"] = "gemini-2.5-pro"
-config["deep_llm_provider"] = "deepseek"
-config["deep_think_llm"] = "deepseek-chat"
-config["deep_backend_url"] = "https://api.deepseek.com/v1"
+config["deep_llm_provider"] = "google"
+config["deep_think_llm"] = "gemini-2.5-pro"
 config["max_debate_rounds"] = 1
 
 # Initialize with custom config

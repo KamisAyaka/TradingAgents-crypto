@@ -1,9 +1,11 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import ToolMessage
 
 from tradingagents.agents.utils.agent_utils import (
     get_crypto_longform_candidates,
     get_crypto_article_content,
 )
+from tradingagents.dataflows.odaily import save_longform_analysis
 
 
 def create_crypto_longform_analyst(llm):
@@ -13,7 +15,7 @@ def create_crypto_longform_analyst(llm):
 
     def crypto_longform_node(state):
         current_date = state.get("trade_date", "Unknown date")
-        asset = state.get("company_of_interest", "crypto market")
+        asset = state.get("asset_of_interest", "crypto market")
 
         tools = [get_crypto_longform_candidates, get_crypto_article_content]
 
@@ -41,14 +43,39 @@ def create_crypto_longform_analyst(llm):
 
         prompt = prompt.partial(system_message=system_message, current_date=current_date, asset=asset)
         chain = prompt | llm.bind_tools(tools)
-        result = chain.invoke(state["messages"])
+        tool_map = {tool.name: tool for tool in tools}
 
+        history = list(state["messages"])
         report = ""
-        if len(result.tool_calls) == 0:
+        result = None
+        while True:
+            result = chain.invoke(history)
+            history.append(result)
+
+            if result.tool_calls:
+                for tool_call in result.tool_calls:
+                    tool_name = tool_call["name"]
+                    tool = tool_map.get(tool_name)
+                    if tool is None:
+                        tool_result = f"工具 {tool_name} 不存在。"
+                    else:
+                        args = tool_call.get("args") or {}
+                        tool_result = tool.invoke(args)
+                    history.append(
+                        ToolMessage(
+                            content=tool_result,
+                            tool_call_id=tool_call.get("id", ""),
+                        )
+                    )
+                continue
+
             report = result.content or ""
+            if report:
+                save_longform_analysis(asset, report, current_date)
+            break
 
         return {
-            "messages": [result],
+            "messages": [result] if result else [],
             "longform_report": report,
         }
 

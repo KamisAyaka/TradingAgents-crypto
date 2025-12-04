@@ -59,6 +59,18 @@ def ensure_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS longform_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset TEXT NOT NULL,
+                report TEXT NOT NULL,
+                analysis_date TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(asset, analysis_date)
+            )
+            """
+        )
         _ensure_columns(
             conn,
             "newsflash",
@@ -68,6 +80,18 @@ def ensure_db() -> None:
             conn,
             "articles",
             {"category": "TEXT", "author": "TEXT", "guid": "TEXT"},
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_longform_analysis_asset_date
+                ON longform_analysis(asset, analysis_date)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_longform_analysis_created_at
+                ON longform_analysis(created_at)
+            """
         )
         conn.commit()
 
@@ -163,3 +187,53 @@ def get_article_candidates(
 
 def get_article_content_by_id(entry_id: str) -> Optional[Dict[str, Any]]:
     return _query_article_by_id(entry_id)
+
+
+def save_longform_analysis(
+    asset: str,
+    report: str,
+    analysis_date: Optional[str] = None,
+) -> None:
+    """Persist a synthesized longform analysis so intraday runs can reuse it."""
+    ensure_db()
+    timestamp = _utcnow().isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            INSERT INTO longform_analysis (asset, report, analysis_date, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(asset, analysis_date) DO UPDATE SET
+                report=excluded.report,
+                created_at=excluded.created_at
+            """,
+            (asset, report, analysis_date, timestamp),
+        )
+        conn.commit()
+
+
+def get_latest_longform_analysis(
+    asset: str,
+    max_age_days: Optional[int] = 14,
+) -> Optional[Dict[str, Any]]:
+    """Fetch the newest cached longform analysis for the requested asset."""
+    ensure_db()
+    params: List[Any] = [asset]
+    cutoff_clause = ""
+    if max_age_days is not None:
+        cutoff = (_utcnow() - timedelta(days=max_age_days)).isoformat()
+        cutoff_clause = "AND datetime(created_at) >= datetime(?)"
+        params.append(cutoff)
+
+    query = f"""
+        SELECT report, analysis_date, created_at
+        FROM longform_analysis
+        WHERE asset = ?
+        {cutoff_clause}
+        ORDER BY datetime(COALESCE(analysis_date, created_at)) DESC,
+                 datetime(created_at) DESC
+        LIMIT 1
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(query, params).fetchone()
+    return dict(row) if row else None
