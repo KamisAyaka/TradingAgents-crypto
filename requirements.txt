@@ -14,3 +14,4 @@ rich
 questionary
 typer
 python-dotenv
+TA-Lib

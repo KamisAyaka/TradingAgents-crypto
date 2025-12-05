@@ -46,8 +46,8 @@ def main() -> None:
     """读取环境变量并启动同步循环。"""
     symbols = [s.strip().upper() for s in os.getenv("BINANCE_SYMBOLS", "BTCUSDT").split(",") if s.strip()]
     intervals = [i.strip() for i in os.getenv("BINANCE_INTERVALS", "1h,4h").split(",") if i.strip()]
-    limit = int(os.getenv("BINANCE_SYNC_LIMIT", "500"))
-    refresh = int(os.getenv("BINANCE_SYNC_INTERVAL", "300"))
+    limit = int(os.getenv("BINANCE_SYNC_LIMIT", "50"))
+    refresh = int(os.getenv("BINANCE_SYNC_INTERVAL", "900"))  # 默认 15 分钟
 
     if not symbols or not intervals:
         raise ValueError("必须提供 BINANCE_SYMBOLS 与 BINANCE_INTERVALS 环境变量")

@@ -4,10 +4,10 @@ from langchain_openai import ChatOpenAI
 
 
 class SignalProcessor:
-    """Processes trading signals to extract actionable decisions."""
+    """负责将长文本信号提取成最终的可执行决策。"""
 
     def __init__(self, quick_thinking_llm: ChatOpenAI):
-        """Initialize with an LLM for processing."""
+        """初始化时注入一个快速 LLM，用于做结果抽取。"""
         self.quick_thinking_llm = quick_thinking_llm
 
     def process_signal(self, full_signal: str) -> str:
@@ -15,15 +15,16 @@ class SignalProcessor:
         Process a full trading signal to extract the core decision.
 
         Args:
-            full_signal: Complete trading signal text
+            full_signal: 完整的交易信号文本
 
         Returns:
-            Extracted decision (BUY, SELL, or HOLD)
+            BUY/SELL/HOLD 三选一的最终裁决
         """
         messages = [
             (
                 "system",
-                "You are an efficient assistant designed to analyze paragraphs or financial reports provided by a group of analysts. Your task is to extract the investment decision: SELL, BUY, or HOLD. Provide only the extracted decision (SELL, BUY, or HOLD) as your output, without adding any additional text or information.",
+                "你是一名高效的交易助理，需要从分析师团队给出的长段交易信号中提取最终决策。"
+                "请只输出 BUY / SELL / HOLD 之一，且不要附加任何额外解释或文字。",
             ),
             ("human", full_signal),
         ]

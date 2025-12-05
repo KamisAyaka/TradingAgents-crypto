@@ -29,6 +29,7 @@ dependencies = [
     "rich>=14.0.0",
     "setuptools>=80.9.0",
     "stockstats>=0.6.5",
+    "TA-Lib>=0.4.29",
     "tqdm>=4.67.1",
     "tushare>=1.4.21",
     "typing-extensions>=4.14.0",

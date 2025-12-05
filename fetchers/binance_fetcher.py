@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 import requests
+import talib
 
 from tradingagents.dataflows.binance import (
     BINANCE_DB_PATH,
@@ -38,6 +39,16 @@ BINANCE_KLINES_GLOBAL = os.getenv(
 BINANCE_KLINES_MIRROR = os.getenv(
     "BINANCE_KLINES_MIRROR_URL", "https://data-api.binance.vision/api/v3/klines"
 )
+
+_MA_TYPE = getattr(talib, "MA_Type", None)
+MA_TYPE_SMA: Any
+MA_TYPE_EMA: Any
+if _MA_TYPE is not None:
+    MA_TYPE_SMA = getattr(_MA_TYPE, "SMA", 0)
+    MA_TYPE_EMA = getattr(_MA_TYPE, "EMA", 1)
+else:
+    MA_TYPE_SMA = 0
+    MA_TYPE_EMA = 1
 
 
 class BinanceAPIError(RuntimeError):
@@ -107,58 +118,50 @@ def _klines_to_dataframe(klines: List[Dict[str, Any]]) -> pd.DataFrame:
     return df.set_index("close_time").sort_index()
 
 
-def _ema(series: pd.Series, span: int) -> pd.Series:
-    return series.ewm(span=span, adjust=False).mean()
-
-
-def _bollinger(df: pd.DataFrame, window: int = 20, num_std: int = 2):
-    mid = df["close"].rolling(window).mean()
-    std = df["close"].rolling(window).std()
-    upper = mid + num_std * std
-    lower = mid - num_std * std
-    return mid, upper, lower
-
-
-def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
-    ema_fast = _ema(series, fast)
-    ema_slow = _ema(series, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = _ema(macd_line, signal)
-    hist = macd_line - signal_line
-    return macd_line, signal_line, hist
-
-
-def _kdj(df: pd.DataFrame, window: int = 9, smooth: int = 3):
-    low_min = df["low"].rolling(window).min()
-    high_max = df["high"].rolling(window).max()
-    rsv = (df["close"] - low_min) / (high_max - low_min)
-    rsv = (rsv.replace([np.inf, -np.inf], np.nan).fillna(0) * 100).clip(0, 100)
-    k = rsv.ewm(alpha=1 / smooth, adjust=False).mean()
-    d = k.ewm(alpha=1 / smooth, adjust=False).mean()
-    j = 3 * k - 2 * d
-    return k, d, j
-
-
 def _compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """根据 DataFrame 计算 EMA/MACD/布林/KDJ 等指标，并返回带新列的数据。"""
     if df.empty:
         return df
     df = df.copy()
-    df["ema_5"] = _ema(df["close"], 5)
-    df["ema_10"] = _ema(df["close"], 10)
-    df["ema_20"] = _ema(df["close"], 20)
-    macd_line, signal_line, hist = _macd(df["close"])
+    close = df["close"].astype(float).to_numpy(copy=False)
+    high = df["high"].astype(float).to_numpy(copy=False)
+    low = df["low"].astype(float).to_numpy(copy=False)
+
+    df["ema_5"] = talib.EMA(close, timeperiod=5)
+    df["ema_10"] = talib.EMA(close, timeperiod=10)
+    df["ema_20"] = talib.EMA(close, timeperiod=20)
+
+    macd_line, signal_line, hist = talib.MACD(
+        close, fastperiod=12, slowperiod=26, signalperiod=9
+    )
     df["macd"] = macd_line
     df["macd_signal"] = signal_line
     df["macd_hist"] = hist
-    mid, upper, lower = _bollinger(df)
+
+    upper, mid, lower = talib.BBANDS(
+        close,
+        timeperiod=20,
+        nbdevup=2,
+        nbdevdn=2,
+        matype=MA_TYPE_SMA,
+    )
     df["boll_mid"] = mid
     df["boll_upper"] = upper
     df["boll_lower"] = lower
-    k, d, j = _kdj(df)
+
+    k, d = talib.STOCH(
+        high,
+        low,
+        close,
+        fastk_period=9,
+        slowk_period=3,
+        slowk_matype=MA_TYPE_EMA,
+        slowd_period=3,
+        slowd_matype=MA_TYPE_EMA,
+    )
     df["kdj_k"] = k
     df["kdj_d"] = d
-    df["kdj_j"] = j
+    df["kdj_j"] = 3 * k - 2 * d
     return df
 
 

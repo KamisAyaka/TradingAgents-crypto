@@ -3,8 +3,8 @@
 import os
 from pathlib import Path
 import json
-from datetime import date, datetime
-from typing import Dict, Any, Tuple, List, Optional, cast
+from datetime import datetime
+from typing import Dict, Any, List, Optional, cast
 
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -17,8 +17,6 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.utils.memory import FinancialSituationMemory
 from tradingagents.agents.utils.agent_states import (
     AgentState,
-    InvestDebateState,
-    RiskDebateState,
 )
 
 # Import the new abstract tool methods from agent_utils
@@ -26,7 +24,6 @@ from tradingagents.agents.utils.agent_utils import (
     get_crypto_market_data,
     get_support_resistance_levels,
     get_crypto_newsflash,
-    get_crypto_longform_articles,
     get_crypto_longform_candidates,
     get_crypto_article_content,
 )
@@ -39,7 +36,7 @@ from .signal_processing import SignalProcessor
 
 
 class TradingAgentsGraph:
-    """Main class that orchestrates the trading agents framework."""
+    """交易多智能体框架的主控制类。"""
 
     def __init__(
         self,
@@ -47,12 +44,12 @@ class TradingAgentsGraph:
         debug=False,
         config: Optional[Dict[str, Any]] = None,
     ):
-        """Initialize the trading agents graph and components.
+        """初始化整个图及各组件。
 
         Args:
-            selected_analysts: List of analyst types to include
-            debug: Whether to run in debug mode
-            config: Configuration dictionary. If None, uses default config
+            selected_analysts: 需要启动的分析师节点列表
+            debug: 是否开启调试模式（输出完整流）
+            config: 配置字典，None 时使用默认配置
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
@@ -60,11 +57,6 @@ class TradingAgentsGraph:
         self.text_log_enabled = self.config.get("text_log_enabled", False)
         self.text_log_dir = self.config.get("text_log_dir")
 
-        # Create cache directories if needed
-        os.makedirs(
-            os.path.join(self.config["project_dir"], "dataflows/data_cache"),
-            exist_ok=True,
-        )
 
         quick_provider = (
             self.config.get("quick_llm_provider") or self.config["llm_provider"]
@@ -90,17 +82,17 @@ class TradingAgentsGraph:
             backend_url=deep_backend,
         )
         
-        # Initialize memories
+        # 初始化各角色记忆
         self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
         self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
         self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
         self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", self.config)
         self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", self.config)
 
-        # Create tool nodes
+        # 创建工具节点
         self.tool_nodes = self._create_tool_nodes()
 
-        # Initialize components
+        # 初始化调度组件
         self.conditional_logic = ConditionalLogic(
             max_debate_rounds=self.config.get("max_debate_rounds", 1),
             max_risk_discuss_rounds=self.config.get("max_risk_discuss_rounds", 1),
@@ -121,12 +113,12 @@ class TradingAgentsGraph:
         self.reflector = Reflector(self.quick_thinking_llm) # type: ignore
         self.signal_processor = SignalProcessor(self.quick_thinking_llm) # type: ignore
 
-        # State tracking
+        # 状态记录
         self.curr_state = None
         self.ticker = None
         self.log_states_dict = {}  # date to full state dict
 
-        # Set up the graph
+        # 构建 LangGraph 工作流
         self.graph = self.graph_setup.setup_graph(selected_analysts)
 
     def _initialize_llm(self, provider: str, model_name: str, backend_url: Optional[str]):
@@ -149,7 +141,7 @@ class TradingAgentsGraph:
         raise ValueError(f"Unsupported LLM provider: {provider}")
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
-        """Create tool nodes for different data sources using abstract methods."""
+        """为不同数据源创建工具节点。"""
         return {
             "market": ToolNode(
                 [
@@ -171,11 +163,11 @@ class TradingAgentsGraph:
         }
 
     def propagate(self, company_name, trade_date):
-        """Run the trading agents graph for a company on a specific date."""
+        """在指定标的和日期上运行整套图。"""
 
         self.ticker = company_name
 
-        # Initialize state
+        # 初始化图状态
         init_agent_state = cast(
             AgentState,
             self.propagator.create_initial_state(company_name, trade_date),
@@ -185,7 +177,7 @@ class TradingAgentsGraph:
         debug_transcript: List[Dict[str, Any]] = []
 
         if self.debug:
-            # Debug mode collects every streamed message for later logging.
+            # 调试模式：记录所有流式消息，方便定位。
             trace = []
             for chunk in self.graph.stream(init_agent_state, **args):
                 if len(chunk["messages"]) == 0:
@@ -202,20 +194,20 @@ class TradingAgentsGraph:
             # Standard mode without tracing
             final_state = self.graph.invoke(init_agent_state, **args)
 
-        # Store current state for reflection
+        # 保存最终状态，供反思用
         self.curr_state = final_state
 
-        # Log state
+        # 写入日志
         log_dir = self._log_state(trade_date, final_state)
 
         if self.debug and debug_transcript:
             self._write_debug_transcript(trade_date, debug_transcript, log_dir)
 
-        # Return decision and processed signal
+        # 返回完整状态与提炼后的最终信号
         return final_state, self.process_signal(final_state["final_trade_decision"])
 
     def _log_state(self, trade_date, final_state):
-        """Log the final state to a JSON file and return the log directory."""
+        """把最终状态落盘为 JSON，并返回日志目录。"""
         self.log_states_dict[str(trade_date)] = {
             "asset_of_interest": final_state["asset_of_interest"],
             "trade_date": final_state["trade_date"],
@@ -229,23 +221,18 @@ class TradingAgentsGraph:
                 "current_response": final_state["investment_debate_state"][
                     "current_response"
                 ],
-                "judge_decision": final_state["investment_debate_state"][
-                    "judge_decision"
-                ],
             },
             "trader_investment_decision": final_state["trader_investment_plan"],
             "risk_debate_state": {
                 "risky_history": final_state["risk_debate_state"]["risky_history"],
                 "safe_history": final_state["risk_debate_state"]["safe_history"],
-                "neutral_history": final_state["risk_debate_state"]["neutral_history"],
                 "history": final_state["risk_debate_state"]["history"],
                 "judge_decision": final_state["risk_debate_state"]["judge_decision"],
             },
-            "investment_plan": final_state["investment_plan"],
             "final_trade_decision": final_state["final_trade_decision"],
         }
 
-        # Save to file
+        # 持久化到文件
         directory = Path(f"eval_results/{self.ticker}/TradingAgentsStrategy_logs/")
         directory.mkdir(parents=True, exist_ok=True)
 
@@ -259,7 +246,7 @@ class TradingAgentsGraph:
         return directory
 
     def reflect_and_remember(self, returns_losses):
-        """Reflect on decisions and update memory based on returns."""
+        """根据收益/亏损对各角色进行反思，并写入记忆。"""
         self.reflector.reflect_bull_researcher(
             self.curr_state, returns_losses, self.bull_memory
         )
@@ -267,25 +254,18 @@ class TradingAgentsGraph:
             self.curr_state, returns_losses, self.bear_memory
         )
         self.reflector.reflect_trader(
-            self.curr_state, returns_losses, self.trader_memory
-        )
-        self.reflector.reflect_invest_judge(
-            self.curr_state, returns_losses, self.invest_judge_memory
+            self.curr_state, returns_losses, self.trader_memory, self.invest_judge_memory
         )
         self.reflector.reflect_risk_manager(
             self.curr_state, returns_losses, self.risk_manager_memory
         )
 
     def _write_text_log(self, trade_date, final_state, base_dir: Path):
-        """Persist a human-readable markdown transcript when enabled."""
+        """如已启用文本日志，生成一份 Markdown 纪要。"""
         if not self.text_log_enabled:
             return
 
-        log_dir = (
-            Path(self.text_log_dir)
-            if self.text_log_dir
-            else base_dir
-        )
+        log_dir = Path(self.text_log_dir) if self.text_log_dir else base_dir
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%H%M%S")
         file_path = log_dir / f"analysis_transcript_{trade_date}_{timestamp}.md"
@@ -312,8 +292,6 @@ class TradingAgentsGraph:
 
         if invest_state.get("history"):
             sections.append("## 看涨/看跌辩论记录\n" + invest_state["history"])
-        if final_state.get("investment_plan"):
-            sections.append("## 研究经理方案\n" + final_state["investment_plan"])
         if final_state.get("trader_investment_plan"):
             sections.append("## 交易员计划\n" + final_state["trader_investment_plan"])
         if risk_state.get("history"):
@@ -324,7 +302,7 @@ class TradingAgentsGraph:
         file_path.write_text("\n\n".join(sections), encoding="utf-8")
 
     def _serialize_message(self, message):
-        """Best-effort serialization of LangChain messages for JSON logging."""
+        """将 LangChain 消息尽力序列化为 JSON 结构。"""
 
         def _safe_content(content):
             if isinstance(content, (str, int, float, type(None))):
@@ -375,13 +353,10 @@ class TradingAgentsGraph:
         transcript: List[Dict[str, Any]],
         base_dir: Path,
     ) -> None:
-        """Persist the streamed debug transcript to JSON for later review."""
+        """将调试用的流式 transcript 写入 JSON，以便复盘。"""
 
-        log_dir = (
-            Path(self.config.get("debug_log_dir"))
-            if self.config.get("debug_log_dir")
-            else base_dir
-        )
+        debug_dir = self.config.get("debug_log_dir")
+        log_dir = Path(debug_dir) if debug_dir else base_dir
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%H%M%S")
         file_path = log_dir / f"debug_transcript_{trade_date}_{timestamp}.json"
@@ -391,5 +366,5 @@ class TradingAgentsGraph:
         )
 
     def process_signal(self, full_signal):
-        """Process a signal to extract the core decision."""
+        """调用 SignalProcessor 抽取 BUY/SELL/HOLD。"""
         return self.signal_processor.process_signal(full_signal)

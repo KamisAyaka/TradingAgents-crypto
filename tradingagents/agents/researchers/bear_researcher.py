@@ -2,6 +2,12 @@ from langchain_core.messages import AIMessage
 import time
 import json
 
+from tradingagents.agents.utils.dialogue import (
+    build_observation_block,
+    parse_structured_reply,
+    register_team_message,
+)
+
 
 def create_bear_researcher(llm, memory):
     def bear_node(state) -> dict:
@@ -21,29 +27,35 @@ def create_bear_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""你是一名专注加密货币领域的看跌分析师，需要陈述反对投资该代币/项目的观点。你的目标是提出一套逻辑严密的论点，强调链上与链下的风险、挑战和负面信号。善用提供的研究与数据，凸显潜在缺陷，并有效反驳看涨论点。
+        observation = build_observation_block(state, "看跌分析师")
+        prompt = f"""{observation}
 
-重点关注：
+### 角色任务
+你是一名专注加密货币领域的看跌分析师，需要陈述反对投资该代币/项目的论点。聚焦链上与链下风险、挑战和负面信号，逐条反驳看涨分析师：{current_response}
 
-- 风险与挑战：指出市场饱和、经济逆风、合规压力等可能阻碍代币表现的因素。
-- 负面指标：结合链上数据、市场趋势、资金流动、社区情绪或近期负面新闻，为你的立场提供证据。
-- 回应看涨观点：以具体数据和严谨推理批判看涨论点，揭示其中的漏洞或过度乐观假设。
-- 互动性：以对话式口吻呈现观点，直接回应看涨分析师的论据，进行辩论，而不是简单罗列事实。
+必须输出：
+- **风险/挑战**：指出宏观、合规、流动性或结构性问题。
+- **负面指标**：引用链上数据、资金流、市场趋势或社区情绪。
+- **互动式反驳**：逐条拆解看涨论证，保持辩论语气。
 
-可用资源：
+### 研究全文
+- 市场技术分析：{market_research_report}
+- Odaily 快讯：{newsflash_report}
+- 长篇叙事：{longform_report}
+- 辩论完整记录：{history}
+- 经验反思：{past_memory_str}
 
-市场技术分析：{market_research_report}
-Odaily 快讯：{newsflash_report}
-长篇叙事报告：{longform_report}
-辩论对话记录：{history}
-最近一次看涨观点：{current_response}
-相似情境的反思与经验：{past_memory_str}
-使用以上信息，输出具有说服力的看跌论点，反驳看涨方的主张，并展开富有动态性的辩论，凸显投资该加密货币的风险与弱点。同时务必吸取过去的经验教训，回应相关反思。
-"""
+请严格依照 ``Action Plan / Team Message / Belief Update`` 模板答复。"""
 
         response = llm.invoke(prompt)
 
-        argument = f"Bear Analyst: {response.content}"
+        structured = parse_structured_reply(response.content)
+        argument = (
+            "Bear Analyst:\n"
+            f"Action Plan: {structured.get('Action Plan:', '')}\n"
+            f"Belief Update: {structured.get('Belief Update:', '')}\n"
+            f"Team Message: \"{structured.get('Team Message:', '')}\""
+        )
 
         new_investment_debate_state = {
             "history": history + "\n" + argument,
@@ -53,6 +65,14 @@ Odaily 快讯：{newsflash_report}
             "count": investment_debate_state["count"] + 1,
         }
 
-        return {"investment_debate_state": new_investment_debate_state}
+        team_messages, next_round = register_team_message(
+            state, "Bear Analyst", structured
+        )
+
+        return {
+            "investment_debate_state": new_investment_debate_state,
+            "team_messages": team_messages,
+            "interaction_round": next_round,
+        }
 
     return bear_node

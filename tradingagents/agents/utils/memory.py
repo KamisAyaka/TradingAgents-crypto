@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class _SimpleMemoryCollection:
-    """Minimal in-memory replacement for a Chroma collection."""
+    """简单的内存向量库，实现 Chroma 集合的最小替代品。"""
 
     def __init__(self, name):
         self.name = name
@@ -73,35 +73,27 @@ class _SimpleMemoryCollection:
 
 class FinancialSituationMemory:
     def __init__(self, name, config):
-        backend_url = config.get("backend_url")
         dashscope_api_key = os.getenv("DASHSCOPE_API_KEY")
         dashscope_base_url = os.getenv(
             "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
         )
         dashscope_model = os.getenv("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v4")
 
-        self.client = None
-        if dashscope_api_key:
-            # 优先使用阿里云百炼的兼容模式 API，便于国内测试
-            self.embedding = dashscope_model
-            try:
+        if not dashscope_api_key:
+            raise RuntimeError(
+                "未检测到 DASHSCOPE_API_KEY。请参考 https://help.aliyun.com/zh/model-studio/embedding "
+                "配置阿里云百炼的 embedding Key 后再运行。"
+            )
+
+        self.embedding = dashscope_model
+        try:
                 self.client = OpenAI(
                     api_key=dashscope_api_key,
                     base_url=dashscope_base_url,
                 )
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(
-                    "无法初始化阿里云 embedding 客户端，改用本地降级方案: %s", exc
-                )
-        else:
-            if backend_url == "http://localhost:11434/v1":
-                self.embedding = "nomic-embed-text"
-            else:
-                self.embedding = "text-embedding-3-small"
-            try:
-                self.client = OpenAI(base_url=backend_url) if backend_url else OpenAI()
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning("无法初始化远程 embedding 客户端，改用本地降级方案: %s", exc)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("无法初始化阿里云 embedding 客户端，将使用本地降级方案: %s", exc)
+            self.client = None
 
         self.situation_collection = None
         self.chroma_client = None
@@ -109,14 +101,25 @@ class FinancialSituationMemory:
         self._remote_embeddings_enabled = self.client is not None
         self._max_remote_input_len = 8192
 
-        if _CHROMA_AVAILABLE:
+        use_chroma = config.get("use_chroma_memory", True)
+        chroma_path = config.get("chroma_path") or os.path.join(
+            config.get("project_dir", os.getcwd()), "data", "chroma_store"
+        )
+
+        if use_chroma and _CHROMA_AVAILABLE:
             try:
-                self.chroma_client = chromadb.Client(
-                    Settings(allow_reset=True, chroma_api_impl="chromadb.api.fastapi.FastAPI")
+                os.makedirs(chroma_path, exist_ok=True)
+                self.chroma_client = chromadb.PersistentClient(
+                    path=chroma_path,
+                    settings=Settings(allow_reset=True),
                 )
-                self.situation_collection = self.chroma_client.create_collection(name=name)
+                self.situation_collection = self.chroma_client.get_or_create_collection(
+                    name=name
+                )
             except Exception as exc:
-                logger.warning("Falling back to simple in-memory collection due to Chroma error: %s", exc)
+                logger.warning("Chroma 初始化失败，自动使用内存向量库: %s", exc)
+        elif use_chroma and not _CHROMA_AVAILABLE:
+            logger.warning("检测到 use_chroma_memory=True，但本地未安装 chromadb，自动使用内存向量库。")
 
         if self.situation_collection is None:
             if _CHROMA_IMPORT_ERROR:
@@ -127,7 +130,7 @@ class FinancialSituationMemory:
             self.situation_collection = _SimpleMemoryCollection(name)
 
     def get_embedding(self, text):
-        """Get OpenAI embedding for a text"""
+        """获取文本的 embedding，用远程服务失败时自动降级为本地 hash 向量。"""
         clean_text = (text or "").strip()
         if not clean_text:
             clean_text = "空上下文，无可供嵌入的有效内容。"
@@ -159,7 +162,7 @@ class FinancialSituationMemory:
         return self._fallback_embedding(clean_text)
 
     def _fallback_embedding(self, text: str):
-        """Deterministic hash-based embedding to avoid external quotas."""
+        """使用确定性的 hash 方法生成向量，避免依赖外部额度。"""
         vector = [0.0] * self._fallback_dim
         tokens = [tok for tok in text.lower().split() if tok]
         if not tokens:
@@ -178,7 +181,7 @@ class FinancialSituationMemory:
         return vector
 
     def add_situations(self, situations_and_advice):
-        """Add financial situations and their corresponding advice. Parameter is a list of tuples (situation, rec)"""
+        """新增情景与建议。参数为 [(situation, recommendation), ...] 列表。"""
 
         situations = []
         advice = []
@@ -201,7 +204,7 @@ class FinancialSituationMemory:
         )
 
     def get_memories(self, current_situation, n_matches=1):
-        """Find matching recommendations using OpenAI embeddings"""
+        """根据当前情景查找最相似的历史建议。"""
         query_embedding = self.get_embedding(current_situation)
 
         results = self.situation_collection.query(
@@ -211,12 +214,21 @@ class FinancialSituationMemory:
         )
 
         matched_results = []
-        for i in range(len(results["documents"][0])):
+        documents = results.get("documents") or [[]]
+        metadatas = results.get("metadatas") or [[]]
+        distances = results.get("distances") or [[]]
+
+        if not documents or not documents[0]:
+            return matched_results
+
+        count = min(len(documents[0]), len(metadatas[0]), len(distances[0]))
+
+        for i in range(count):
             matched_results.append(
                 {
-                    "matched_situation": results["documents"][0][i],
-                    "recommendation": results["metadatas"][0][i]["recommendation"],
-                    "similarity_score": 1 - results["distances"][0][i],
+                    "matched_situation": documents[0][i],
+                    "recommendation": metadatas[0][i]["recommendation"],
+                    "similarity_score": 1 - distances[0][i],
                 }
             )
 
@@ -224,46 +236,43 @@ class FinancialSituationMemory:
 
 
 if __name__ == "__main__":
-    # Example usage
-    matcher = FinancialSituationMemory()
+    # 使用示例
+    matcher = FinancialSituationMemory("demo_memory", {"backend_url": None})
 
-    # Example data
+    # 示例情景与建议
     example_data = [
         (
-            "High inflation rate with rising interest rates and declining consumer spending",
-            "Consider defensive sectors like consumer staples and utilities. Review fixed-income portfolio duration.",
+            "通胀高企、利率上行、消费支出走弱",
+            "优先考虑防御型板块，例如必选消费与公用事业，同时回顾固收久期配置。",
         ),
         (
-            "Tech sector showing high volatility with increasing institutional selling pressure",
-            "Reduce exposure to high-growth tech stocks. Look for value opportunities in established tech companies with strong cash flows.",
+            "科技板块波动剧烈，机构抛售压力上升",
+            "降低高成长科技敞口，寻找现金流稳健的成熟科技公司价值机会。",
         ),
         (
-            "Strong dollar affecting emerging markets with increasing forex volatility",
-            "Hedge currency exposure in international positions. Consider reducing allocation to emerging market debt.",
+            "美元走强冲击新兴市场，外汇波动上升",
+            "对海外仓位做汇率对冲，适度下调新兴市场债券配置。",
         ),
         (
-            "Market showing signs of sector rotation with rising yields",
-            "Rebalance portfolio to maintain target allocations. Consider increasing exposure to sectors benefiting from higher rates.",
+            "收益率走高引发板块轮动迹象",
+            "重新平衡组合，增配受益于高利率环境的行业。",
         ),
     ]
 
-    # Add the example situations and recommendations
     matcher.add_situations(example_data)
 
-    # Example query
     current_situation = """
-    Market showing increased volatility in tech sector, with institutional investors 
-    reducing positions and rising interest rates affecting growth stock valuations
+    科技板块波动扩大，机构投资者持续减仓，利率上行侵蚀成长股估值
     """
 
     try:
         recommendations = matcher.get_memories(current_situation, n_matches=2)
 
         for i, rec in enumerate(recommendations, 1):
-            print(f"\nMatch {i}:")
-            print(f"Similarity Score: {rec['similarity_score']:.2f}")
-            print(f"Matched Situation: {rec['matched_situation']}")
-            print(f"Recommendation: {rec['recommendation']}")
+            print(f"\n匹配案例 {i}:")
+            print(f"相似度: {rec['similarity_score']:.2f}")
+            print(f"匹配情境: {rec['matched_situation']}")
+            print(f"建议: {rec['recommendation']}")
 
     except Exception as e:
-        print(f"Error during recommendation: {str(e)}")
+        print(f"推荐时出现错误: {str(e)}")

@@ -11,7 +11,7 @@ from .conditional_logic import ConditionalLogic
 
 
 class GraphSetup:
-    """Handles the setup and configuration of the agent graph."""
+    """负责搭建与编译整套智能体工作流图。"""
 
     def __init__(
         self,
@@ -25,7 +25,7 @@ class GraphSetup:
         risk_manager_memory,
         conditional_logic: ConditionalLogic,
     ):
-        """Initialize with required components."""
+        """注入所有依赖的 LLM、工具节点、记忆与条件逻辑。"""
         self.quick_thinking_llm: Any = quick_thinking_llm
         self.deep_thinking_llm: Any = deep_thinking_llm
         self.tool_nodes = tool_nodes
@@ -39,18 +39,18 @@ class GraphSetup:
     def setup_graph(
         self, selected_analysts=["market", "newsflash", "longform"]
     ):
-        """Set up and compile the agent workflow graph.
+        """根据配置创建图结构。
 
         Args:
-            selected_analysts (list): List of analyst types to include. Options are:
-                - "market": Crypto market/technical analyst
-                - "newsflash": Odaily short-form news analyst
-                - "longform": Cached Odaily long-form research loader
+            selected_analysts (list): 需要启用的分析师节点：
+                - "market": 加密市场/技术分析师
+                - "newsflash": Odaily 快讯分析师
+                - "longform": Odaily 长文研究缓存加载器
         """
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
 
-        # Create analyst nodes
+        # 初始化分析师节点与工具
         analyst_nodes: Dict[str, Any] = {}
         delete_nodes: Dict[str, Any] = {}
         tool_nodes: Dict[str, ToolNode] = {}
@@ -73,30 +73,28 @@ class GraphSetup:
             analyst_nodes["longform"] = create_longform_cache_loader()
             delete_nodes["longform"] = create_msg_delete()
 
-        # Create researcher and manager nodes
+        # 创建研究员与交易节点
         bull_researcher_node = create_bull_researcher(
             self.quick_thinking_llm, self.bull_memory
         )
         bear_researcher_node = create_bear_researcher(
             self.quick_thinking_llm, self.bear_memory
         )
-        research_manager_node = create_research_manager(
-            self.deep_thinking_llm, self.invest_judge_memory
+        trader_node = create_trader(
+            self.quick_thinking_llm, self.trader_memory, self.invest_judge_memory
         )
-        trader_node = create_trader(self.quick_thinking_llm, self.trader_memory)
 
-        # Create risk analysis nodes
+        # 创建风险讨论节点
         risky_analyst = create_risky_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
         safe_analyst = create_safe_debator(self.quick_thinking_llm)
         risk_manager_node = create_risk_manager(
             self.deep_thinking_llm, self.risk_manager_memory
         )
 
-        # Create workflow
+        # 创建状态图
         workflow = StateGraph(AgentState)
 
-        # Add analyst nodes to the graph
+        # 将分析师节点加入图并配置工具/清理节点
         for analyst_type, node in analyst_nodes.items():
             workflow.add_node(f"{analyst_type.capitalize()} Analyst", node)
             workflow.add_node(
@@ -105,17 +103,15 @@ class GraphSetup:
             if analyst_type in tool_nodes:
                 workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
 
-        # Add other nodes
+        # 添加研究员、交易员、风险团队与法官节点
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)
-        workflow.add_node("Research Manager", research_manager_node)
         workflow.add_node("Trader", trader_node)
         workflow.add_node("Risky Analyst", risky_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
         workflow.add_node("Safe Analyst", safe_analyst)
         workflow.add_node("Risk Judge", risk_manager_node)
 
-        # Define analyst execution order
+        # 拆分并行/串行的分析师组合，用于 wiring
         parallel_analysts = [
             analyst
             for analyst in ["market", "newsflash"]
@@ -125,7 +121,7 @@ class GraphSetup:
             analyst for analyst in selected_analysts if analyst not in parallel_analysts
         ]
 
-        # Helper to wire tool-driven analysts
+        # 为需要工具调用的分析师创建回路
         def _wire_tool_driven(analyst_type: str):
             cap_name = analyst_type.capitalize()
             current_analyst = f"{cap_name} Analyst"
@@ -140,7 +136,7 @@ class GraphSetup:
             workflow.add_edge(current_tools, current_analyst)
             return current_clear
 
-        # Parallel stage wiring
+        # 并行分析师的布线：需要等所有并行节点完成才放行
         if parallel_analysts:
             gate_node_name = "Parallel Analyst Gate"
             wait_node_name = "Parallel Analyst Wait"
@@ -178,7 +174,7 @@ class GraphSetup:
         else:
             workflow.add_edge(START, "Bull Researcher")
 
-        # Sequential analysts after the parallel stage
+        # 并行段之后的串行分析师
         for idx, analyst_type in enumerate(remaining_analysts):
             cap_name = analyst_type.capitalize()
             current_node = f"{cap_name} Analyst"
@@ -197,13 +193,13 @@ class GraphSetup:
             else:
                 workflow.add_edge(current_node, next_node)
 
-        # Add remaining edges
+        # 牛熊辩论与风险讨论的跳转逻辑
         workflow.add_conditional_edges(
             "Bull Researcher",
             self.conditional_logic.should_continue_debate,
             {
                 "Bear Researcher": "Bear Researcher",
-                "Research Manager": "Research Manager",
+                "Trader": "Trader",
             },
         )
         workflow.add_conditional_edges(
@@ -211,10 +207,9 @@ class GraphSetup:
             self.conditional_logic.should_continue_debate,
             {
                 "Bull Researcher": "Bull Researcher",
-                "Research Manager": "Research Manager",
+                "Trader": "Trader",
             },
         )
-        workflow.add_edge("Research Manager", "Trader")
         workflow.add_edge("Trader", "Risky Analyst")
         workflow.add_conditional_edges(
             "Risky Analyst",
@@ -226,14 +221,6 @@ class GraphSetup:
         )
         workflow.add_conditional_edges(
             "Safe Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Neutral Analyst": "Neutral Analyst",
-                "Risk Judge": "Risk Judge",
-            },
-        )
-        workflow.add_conditional_edges(
-            "Neutral Analyst",
             self.conditional_logic.should_continue_risk_analysis,
             {
                 "Risky Analyst": "Risky Analyst",

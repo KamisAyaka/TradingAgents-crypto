@@ -2,7 +2,6 @@
 
 from typing import Dict, Any
 from tradingagents.agents.utils.agent_states import (
-    AgentState,
     InvestDebateState,
     RiskDebateState,
 )
@@ -29,7 +28,6 @@ class Propagator:
                     "bull_history": "",
                     "bear_history": "",
                     "current_response": "",
-                    "judge_decision": "",
                     "count": 0,
                 }
             ),
@@ -38,11 +36,9 @@ class Propagator:
                     "history": "",
                     "risky_history": "",
                     "safe_history": "",
-                    "neutral_history": "",
                     "latest_speaker": "",
                     "current_risky_response": "",
                     "current_safe_response": "",
-                    "current_neutral_response": "",
                     "judge_decision": "",
                     "count": 0,
                 }
@@ -50,9 +46,10 @@ class Propagator:
             "market_report": "",
             "newsflash_report": "",
             "longform_report": "",
-            "investment_plan": "",
             "trader_investment_plan": "",
             "final_trade_decision": "",
+            "team_messages": [],
+            "interaction_round": 1,
         }
 
     def get_graph_args(self) -> Dict[str, Any]:

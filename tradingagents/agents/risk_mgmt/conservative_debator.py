@@ -1,6 +1,9 @@
-from langchain_core.messages import AIMessage
-import time
-import json
+
+from tradingagents.agents.utils.dialogue import (
+    build_observation_block,
+    parse_structured_reply,
+    register_team_message,
+)
 
 
 def create_safe_debator(llm):
@@ -10,7 +13,6 @@ def create_safe_debator(llm):
         safe_history = risk_debate_state.get("safe_history", "")
 
         current_risky_response = risk_debate_state.get("current_risky_response", "")
-        current_neutral_response = risk_debate_state.get("current_neutral_response", "")
 
         market_research_report = state["market_report"]
         newsflash_report = state["newsflash_report"]
@@ -18,42 +20,52 @@ def create_safe_debator(llm):
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = f"""你是保守型风险分析师，首要任务是守住资产安全、降低波动、维持稳定增长。请在评估交易员方案时，逐项识别高风险因素，说明潜在损失、宏观逆风或流动性风险。
+        observation = build_observation_block(state, "保守风险分析师")
+        prompt = f"""{observation}
 
-具体要求：
-1. 回应激进与中性分析师的观点，指出他们忽视的威胁或对可持续性的缺失。
-2. 参考以下资料构建低风险或降杠杆方案：
-   - 市场技术报告：{market_research_report}
-   - Odaily 快讯：{newsflash_report}
-   - 长线叙事报告：{longform_report}
-3. 交易员当前方案：{trader_decision}
-4. 讨论记录：{history}
-   - 激进派最新观点：{current_risky_response}
-   - 中性派最新观点：{current_neutral_response}
-   如果对方没有发言，请勿虚构，直接陈述你的立场即可。
+### 角色任务
+守住资产安全、降低波动。对激进派观点逐条回应：
+- 激进派：{current_risky_response or '尚无发言'}
 
-在回复中强调谨慎策略的优势：质疑乐观假设、凸显下行风险、给出更稳健的替代方案，并保持对话式口吻、集中辩论而不是单纯列数据。"""
+资料来源：
+- 市场技术：{market_research_report}
+- Odaily 快讯：{newsflash_report}
+- 长线叙事：{longform_report}
+- 交易员方案：{trader_decision}
+- 历史记录：{history}
+
+构建低风险或降杠杆替代方案，强调风控触发与观望标准，并使用 ``Action Plan / Team Message / Belief Update`` 格式回答。"""
 
         response = llm.invoke(prompt)
 
-        argument = f"Safe Analyst: {response.content}"
+        structured = parse_structured_reply(response.content)
+        argument = (
+            "Safe Analyst:\n"
+            f"Action Plan: {structured.get('Action Plan:', '')}\n"
+            f"Belief Update: {structured.get('Belief Update:', '')}\n"
+            f"Team Message: \"{structured.get('Team Message:', '')}\""
+        )
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,
             "risky_history": risk_debate_state.get("risky_history", ""),
             "safe_history": safe_history + "\n" + argument,
-            "neutral_history": risk_debate_state.get("neutral_history", ""),
             "latest_speaker": "Safe",
             "current_risky_response": risk_debate_state.get(
                 "current_risky_response", ""
             ),
             "current_safe_response": argument,
-            "current_neutral_response": risk_debate_state.get(
-                "current_neutral_response", ""
-            ),
             "count": risk_debate_state["count"] + 1,
         }
 
-        return {"risk_debate_state": new_risk_debate_state}
+        team_messages, next_round = register_team_message(
+            state, "Safe Analyst", structured
+        )
+
+        return {
+            "risk_debate_state": new_risk_debate_state,
+            "team_messages": team_messages,
+            "interaction_round": next_round,
+        }
 
     return safe_node

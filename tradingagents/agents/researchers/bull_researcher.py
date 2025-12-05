@@ -2,6 +2,12 @@ from langchain_core.messages import AIMessage
 import time
 import json
 
+from tradingagents.agents.utils.dialogue import (
+    build_observation_block,
+    parse_structured_reply,
+    register_team_message,
+)
+
 
 def create_bull_researcher(llm, memory):
     def bull_node(state) -> dict:
@@ -21,27 +27,36 @@ def create_bull_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""你是一名专注加密货币领域的看涨分析师，负责为投资该代币提供支持。你的任务是构建一套有力且有据可依的论证，竞争优势与正面市场信号。善用提供的研究与数据，回应疑虑并有效反驳看跌观点。
+        observation = build_observation_block(state, "看涨分析师")
+        prompt = f"""{observation}
 
-重点关注：
-- 成长潜力：强调协议的市场机会、代币需求、生态扩张与可扩展性。
-- 正向指标：引用链上数据、资金流入、行业趋势及近期利好消息等证据。
-- 回应看跌观点：用具体数据与严谨推理分析看跌论点，充分回应疑虑，说明看涨观点为何更有说服力。
-- 互动性：以对话式口吻呈现论点，直接回应看跌分析师的观点，进行有效辩论，而非仅罗列数据。
+### 角色任务
+你是一名专注加密货币领域的看涨分析师，负责为投资该代币提供支持。构建有力且有据可依的论证，善用提供的研究与数据，回应疑虑并有效反驳看跌观点。
 
-可用资源：
-市场技术分析：{market_research_report}
-Odaily 快讯：{newsflash_report}
-长篇叙事报告：{longform_report}
-辩论对话记录：{history}
-最近一次看跌观点：{current_response}
-相似情境的反思与经验：{past_memory_str}
-使用以上信息，输出具有说服力的看涨论点，反驳看跌方的顾虑，并展开富有动态性的辩论，彰显看涨立场的优势。同时务必吸取过去的经验教训，回应相关反思。
-"""
+必须覆盖：
+- **成长潜力**：强调市场机会、需求、生态扩张与可扩展性。
+- **正向指标**：引用链上数据、资金流入、行业趋势及近期利好消息。
+- **针对性反驳**：逐条回应最近一次看跌观点：{current_response}
+- **互动语气**：直接点名并回应看跌分析师，保持辩论式表达。
+
+### 研究全文（供引用）
+- 市场技术分析：{market_research_report}
+- Odaily 快讯：{newsflash_report}
+- 长篇叙事：{longform_report}
+- 辩论完整记录：{history}
+- 经验教训：{past_memory_str}
+
+请严格用 ``Action Plan / Team Message / Belief Update`` 格式回复。"""
 
         response = llm.invoke(prompt)
 
-        argument = f"Bull Analyst: {response.content}"
+        structured = parse_structured_reply(response.content)
+        argument = (
+            "Bull Analyst:\n"
+            f"Action Plan: {structured.get('Action Plan:', '')}\n"
+            f"Belief Update: {structured.get('Belief Update:', '')}\n"
+            f"Team Message: \"{structured.get('Team Message:', '')}\""
+        )
 
         new_investment_debate_state = {
             "history": history + "\n" + argument,
@@ -51,6 +66,14 @@ Odaily 快讯：{newsflash_report}
             "count": investment_debate_state["count"] + 1,
         }
 
-        return {"investment_debate_state": new_investment_debate_state}
+        team_messages, next_round = register_team_message(
+            state, "Bull Analyst", structured
+        )
+
+        return {
+            "investment_debate_state": new_investment_debate_state,
+            "team_messages": team_messages,
+            "interaction_round": next_round,
+        }
 
     return bull_node

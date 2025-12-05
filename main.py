@@ -8,11 +8,15 @@ load_dotenv()
 
 # Create a custom config
 config = DEFAULT_CONFIG.copy()
-config["quick_llm_provider"] = "google"
-config["quick_think_llm"] = "gemini-2.5-pro"
-config["deep_llm_provider"] = "google"
-config["deep_think_llm"] = "gemini-2.5-pro"
+config["quick_llm_provider"] = "openai"
+config["quick_think_llm"] = "deepseek-ai/DeepSeek-V3.2"
+config["deep_llm_provider"] = "openai"
+config["deep_think_llm"] = "deepseek-ai/DeepSeek-V3.2"
+config["backend_url"] = "https://api-inference.modelscope.cn/v1/"
+config["quick_backend_url"] = "https://api-inference.modelscope.cn/v1/"
+config["deep_backend_url"] = "https://api-inference.modelscope.cn/v1/"
 config["max_debate_rounds"] = 1
+config["use_chroma_memory"] = False
 
 # Initialize with custom config
 ta = TradingAgentsGraph(

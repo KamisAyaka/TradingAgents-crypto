@@ -14,6 +14,9 @@ DEFAULT_CONFIG = {
     "deep_backend_url": None,
     "longform_llm_provider": "dashscope",
     "longform_llm_model": "qwen-plus",
+    # Memory settings
+    "use_chroma_memory": True,
+    "chroma_path": os.path.join(os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"), "chroma_store"),
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
