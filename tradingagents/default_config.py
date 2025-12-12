@@ -19,7 +19,6 @@ DEFAULT_CONFIG = {
     "chroma_path": os.path.join(os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"), "chroma_store"),
     # Debate and discussion settings
     "max_debate_rounds": 1,
-    "max_risk_discuss_rounds": 1,
     "max_recur_limit": 100,
     # Logging options
     "suppress_console_output": False,

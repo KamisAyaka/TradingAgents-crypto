@@ -3,7 +3,7 @@
 from typing import Dict, Any
 from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
-    RiskDebateState,
+    RiskReviewState,
 )
 
 
@@ -15,12 +15,12 @@ class Propagator:
         self.max_recur_limit = max_recur_limit
 
     def create_initial_state(
-        self, company_name: str, trade_date: str
+        self, asset_symbol: str, trade_date: str
     ) -> Dict[str, Any]:
         """Create the initial state for the agent graph."""
         return {
-            "messages": [("human", company_name)],
-            "asset_of_interest": company_name,
+            "messages": [("human", asset_symbol)],
+            "asset_of_interest": asset_symbol,
             "trade_date": str(trade_date),
             "investment_debate_state": InvestDebateState(
                 {
@@ -31,15 +31,11 @@ class Propagator:
                     "count": 0,
                 }
             ),
-            "risk_debate_state": RiskDebateState(
+            "risk_review_state": RiskReviewState(
                 {
                     "history": "",
-                    "risky_history": "",
-                    "safe_history": "",
-                    "latest_speaker": "",
-                    "current_risky_response": "",
-                    "current_safe_response": "",
-                    "judge_decision": "",
+                    "analyst_report": "",
+                    "manager_summary": "",
                     "count": 0,
                 }
             ),
@@ -48,7 +44,6 @@ class Propagator:
             "longform_report": "",
             "trader_investment_plan": "",
             "final_trade_decision": "",
-            "team_messages": [],
             "interaction_round": 1,
         }
 

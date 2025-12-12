@@ -23,6 +23,7 @@ class GraphSetup:
         trader_memory,
         invest_judge_memory,
         risk_manager_memory,
+        general_manager_memory,
         conditional_logic: ConditionalLogic,
     ):
         """注入所有依赖的 LLM、工具节点、记忆与条件逻辑。"""
@@ -34,6 +35,7 @@ class GraphSetup:
         self.trader_memory = trader_memory
         self.invest_judge_memory = invest_judge_memory
         self.risk_manager_memory = risk_manager_memory
+        self.general_manager_memory = general_manager_memory
         self.conditional_logic = conditional_logic
 
     def setup_graph(
@@ -64,7 +66,7 @@ class GraphSetup:
 
         if "newsflash" in selected_analysts:
             analyst_nodes["newsflash"] = create_crypto_newsflash_analyst(
-                self.quick_thinking_llm
+                self.deep_thinking_llm
             )
             delete_nodes["newsflash"] = create_msg_delete()
             tool_nodes["newsflash"] = self.tool_nodes["newsflash"]
@@ -85,10 +87,11 @@ class GraphSetup:
         )
 
         # 创建风险讨论节点
-        risky_analyst = create_risky_debator(self.quick_thinking_llm)
-        safe_analyst = create_safe_debator(self.quick_thinking_llm)
         risk_manager_node = create_risk_manager(
             self.deep_thinking_llm, self.risk_manager_memory
+        )
+        manager_node = create_manager(
+            self.deep_thinking_llm, self.general_manager_memory
         )
 
         # 创建状态图
@@ -107,9 +110,8 @@ class GraphSetup:
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)
         workflow.add_node("Trader", trader_node)
-        workflow.add_node("Risky Analyst", risky_analyst)
-        workflow.add_node("Safe Analyst", safe_analyst)
-        workflow.add_node("Risk Judge", risk_manager_node)
+        workflow.add_node("Risk Manager", risk_manager_node)
+        workflow.add_node("Manager", manager_node)
 
         # 拆分并行/串行的分析师组合，用于 wiring
         parallel_analysts = [
@@ -210,25 +212,9 @@ class GraphSetup:
                 "Trader": "Trader",
             },
         )
-        workflow.add_edge("Trader", "Risky Analyst")
-        workflow.add_conditional_edges(
-            "Risky Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Safe Analyst": "Safe Analyst",
-                "Risk Judge": "Risk Judge",
-            },
-        )
-        workflow.add_conditional_edges(
-            "Safe Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Risky Analyst": "Risky Analyst",
-                "Risk Judge": "Risk Judge",
-            },
-        )
-
-        workflow.add_edge("Risk Judge", END)
+        workflow.add_edge("Trader", "Risk Manager")
+        workflow.add_edge("Risk Manager", "Manager")
+        workflow.add_edge("Manager", END)
 
         # Compile and return
         return workflow.compile()

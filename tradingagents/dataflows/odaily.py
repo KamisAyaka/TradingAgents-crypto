@@ -149,10 +149,41 @@ def _query_article_by_id(entry_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def _query_newsflash_by_id(entry_id: str) -> Optional[Dict[str, Any]]:
+    ensure_db()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT entry_id, title, summary, content, link,
+                   published, tags, raw_json, fetched_at,
+                   category, author, guid
+            FROM newsflash
+            WHERE entry_id = ? OR guid = ?
+            LIMIT 1
+            """,
+            (entry_id, entry_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_newsflash(
     limit: int = 20,
     lookback_hours: int = 24,
 ) -> List[Dict[str, Any]]:
+    cutoff = None
+    if lookback_hours:
+        cutoff = _utcnow() - timedelta(hours=lookback_hours)
+    return _query_entries("newsflash", limit, cutoff)
+
+
+def get_newsflash_candidates(
+    limit: int = 20,
+    lookback_hours: int = 24,
+) -> List[Dict[str, Any]]:
+    """
+    Retrieve recent Odaily newsflash titles with metadata for LLM screening.
+    """
     cutoff = None
     if lookback_hours:
         cutoff = _utcnow() - timedelta(hours=lookback_hours)
@@ -187,6 +218,10 @@ def get_article_candidates(
 
 def get_article_content_by_id(entry_id: str) -> Optional[Dict[str, Any]]:
     return _query_article_by_id(entry_id)
+
+
+def get_newsflash_content_by_id(entry_id: str) -> Optional[Dict[str, Any]]:
+    return _query_newsflash_by_id(entry_id)
 
 
 def save_longform_analysis(

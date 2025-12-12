@@ -102,11 +102,21 @@ class Reflector:
         invest_judge_memory.add_situations([(situation, result)])
 
     def reflect_risk_manager(self, current_state, returns_losses, risk_manager_memory):
-        """反思风险法官的决策。"""
+        """反思风险经理的评估。"""
         situation = self._extract_current_situation(current_state)
-        judge_decision = current_state["risk_debate_state"]["judge_decision"]
+        analyst_report = current_state["risk_review_state"]["analyst_report"]
 
         result = self._reflect_on_component(
-            "RISK JUDGE", judge_decision, situation, returns_losses
+            "RISK MANAGER", analyst_report, situation, returns_losses
         )
         risk_manager_memory.add_situations([(situation, result)])
+
+    def reflect_manager(self, current_state, returns_losses, manager_memory):
+        """反思总经理的最终裁决。"""
+        situation = self._extract_current_situation(current_state)
+        manager_summary = current_state["risk_review_state"]["manager_summary"] or current_state["final_trade_decision"]
+
+        result = self._reflect_on_component(
+            "GENERAL MANAGER", manager_summary, situation, returns_losses
+        )
+        manager_memory.add_situations([(situation, result)])

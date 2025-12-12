@@ -1,10 +1,8 @@
 # TradingAgents/graph/trading_graph.py
 
 import os
-from pathlib import Path
 import json
-from datetime import datetime
-from typing import Dict, Any, List, Optional, cast
+from typing import Dict, Any, Optional, cast
 
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -23,16 +21,16 @@ from tradingagents.agents.utils.agent_states import (
 from tradingagents.agents.utils.agent_utils import (
     get_crypto_market_data,
     get_support_resistance_levels,
-    get_crypto_newsflash,
+    get_crypto_newsflash_candidates,
     get_crypto_longform_candidates,
     get_crypto_article_content,
+    get_crypto_newsflash_content,
 )
 
 from .conditional_logic import ConditionalLogic
 from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
-from .signal_processing import SignalProcessor
 
 
 class TradingAgentsGraph:
@@ -54,8 +52,6 @@ class TradingAgentsGraph:
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.suppress_console_output = self.config.get("suppress_console_output", False)
-        self.text_log_enabled = self.config.get("text_log_enabled", False)
-        self.text_log_dir = self.config.get("text_log_dir")
 
 
         quick_provider = (
@@ -88,6 +84,7 @@ class TradingAgentsGraph:
         self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
         self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", self.config)
         self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", self.config)
+        self.general_manager_memory = FinancialSituationMemory("general_manager_memory", self.config)
 
         # 创建工具节点
         self.tool_nodes = self._create_tool_nodes()
@@ -95,7 +92,6 @@ class TradingAgentsGraph:
         # 初始化调度组件
         self.conditional_logic = ConditionalLogic(
             max_debate_rounds=self.config.get("max_debate_rounds", 1),
-            max_risk_discuss_rounds=self.config.get("max_risk_discuss_rounds", 1),
         )
         self.graph_setup = GraphSetup(
             self.quick_thinking_llm,
@@ -106,17 +102,16 @@ class TradingAgentsGraph:
             self.trader_memory,
             self.invest_judge_memory,
             self.risk_manager_memory,
+            self.general_manager_memory,
             self.conditional_logic,
         )
 
         self.propagator = Propagator(self.config.get("max_recur_limit", 100))
         self.reflector = Reflector(self.quick_thinking_llm) # type: ignore
-        self.signal_processor = SignalProcessor(self.quick_thinking_llm) # type: ignore
 
         # 状态记录
         self.curr_state = None
         self.ticker = None
-        self.log_states_dict = {}  # date to full state dict
 
         # 构建 LangGraph 工作流
         self.graph = self.graph_setup.setup_graph(selected_analysts)
@@ -151,7 +146,8 @@ class TradingAgentsGraph:
             ),
             "newsflash": ToolNode(
                 [
-                    get_crypto_newsflash,
+                    get_crypto_newsflash_candidates,
+                    get_crypto_newsflash_content,
                 ]
             ),
             "longform": ToolNode(
@@ -162,88 +158,26 @@ class TradingAgentsGraph:
             ),
         }
 
-    def propagate(self, company_name, trade_date):
-        """在指定标的和日期上运行整套图。"""
+    def propagate(self, asset_symbol, trade_date):
+        """在指定加密货币/交易对和日期上运行整套图。"""
 
-        self.ticker = company_name
+        self.ticker = asset_symbol
 
         # 初始化图状态
         init_agent_state = cast(
             AgentState,
-            self.propagator.create_initial_state(company_name, trade_date),
+            self.propagator.create_initial_state(asset_symbol, trade_date),
         )
         args = self.propagator.get_graph_args()
 
-        debug_transcript: List[Dict[str, Any]] = []
-
-        if self.debug:
-            # 调试模式：记录所有流式消息，方便定位。
-            trace = []
-            for chunk in self.graph.stream(init_agent_state, **args):
-                if len(chunk["messages"]) == 0:
-                    continue
-                last_message = chunk["messages"][-1]
-                debug_transcript.append(self._serialize_message(last_message))
-                trace.append(chunk)
-
-            if trace:
-                final_state = trace[-1]
-            else:
-                final_state = self.graph.invoke(init_agent_state, **args)
-        else:
-            # Standard mode without tracing
-            final_state = self.graph.invoke(init_agent_state, **args)
+        # 标准模式运行图
+        final_state = self.graph.invoke(init_agent_state, **args)
 
         # 保存最终状态，供反思用
         self.curr_state = final_state
 
-        # 写入日志
-        log_dir = self._log_state(trade_date, final_state)
-
-        if self.debug and debug_transcript:
-            self._write_debug_transcript(trade_date, debug_transcript, log_dir)
-
         # 返回完整状态与提炼后的最终信号
-        return final_state, self.process_signal(final_state["final_trade_decision"])
-
-    def _log_state(self, trade_date, final_state):
-        """把最终状态落盘为 JSON，并返回日志目录。"""
-        self.log_states_dict[str(trade_date)] = {
-            "asset_of_interest": final_state["asset_of_interest"],
-            "trade_date": final_state["trade_date"],
-            "market_report": final_state["market_report"],
-            "newsflash_report": final_state["newsflash_report"],
-            "longform_report": final_state["longform_report"],
-            "investment_debate_state": {
-                "bull_history": final_state["investment_debate_state"]["bull_history"],
-                "bear_history": final_state["investment_debate_state"]["bear_history"],
-                "history": final_state["investment_debate_state"]["history"],
-                "current_response": final_state["investment_debate_state"][
-                    "current_response"
-                ],
-            },
-            "trader_investment_decision": final_state["trader_investment_plan"],
-            "risk_debate_state": {
-                "risky_history": final_state["risk_debate_state"]["risky_history"],
-                "safe_history": final_state["risk_debate_state"]["safe_history"],
-                "history": final_state["risk_debate_state"]["history"],
-                "judge_decision": final_state["risk_debate_state"]["judge_decision"],
-            },
-            "final_trade_decision": final_state["final_trade_decision"],
-        }
-
-        # 持久化到文件
-        directory = Path(f"eval_results/{self.ticker}/TradingAgentsStrategy_logs/")
-        directory.mkdir(parents=True, exist_ok=True)
-
-        with open(
-            f"eval_results/{self.ticker}/TradingAgentsStrategy_logs/full_states_log_{trade_date}.json",
-            "w",
-        ) as f:
-            json.dump(self.log_states_dict, f, indent=4, ensure_ascii=False)
-
-        self._write_text_log(trade_date, final_state, directory)
-        return directory
+        return final_state, final_state["final_trade_decision"]
 
     def reflect_and_remember(self, returns_losses):
         """根据收益/亏损对各角色进行反思，并写入记忆。"""
@@ -259,47 +193,9 @@ class TradingAgentsGraph:
         self.reflector.reflect_risk_manager(
             self.curr_state, returns_losses, self.risk_manager_memory
         )
-
-    def _write_text_log(self, trade_date, final_state, base_dir: Path):
-        """如已启用文本日志，生成一份 Markdown 纪要。"""
-        if not self.text_log_enabled:
-            return
-
-        log_dir = Path(self.text_log_dir) if self.text_log_dir else base_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%H%M%S")
-        file_path = log_dir / f"analysis_transcript_{trade_date}_{timestamp}.md"
-
-        market_report = final_state.get("market_report") or ""
-        newsflash_report = final_state.get("newsflash_report") or ""
-        longform_report = final_state.get("longform_report") or ""
-        invest_state = final_state.get("investment_debate_state", {})
-        risk_state = final_state.get("risk_debate_state", {})
-
-        sections = [
-            f"# TradingAgents 分析记录 - {trade_date}",
-            f"- 资产：{final_state.get('asset_of_interest', '')}",
-            f"- 最终交易决定：{final_state.get('final_trade_decision', '')}",
-            f"- 交易计划：{final_state.get('trader_investment_plan', '')}",
-        ]
-
-        if market_report:
-            sections.append("## 市场技术分析\n" + market_report)
-        if newsflash_report:
-            sections.append("## 快讯分析\n" + newsflash_report)
-        if longform_report:
-            sections.append("## 长文研究（缓存）\n" + longform_report)
-
-        if invest_state.get("history"):
-            sections.append("## 看涨/看跌辩论记录\n" + invest_state["history"])
-        if final_state.get("trader_investment_plan"):
-            sections.append("## 交易员计划\n" + final_state["trader_investment_plan"])
-        if risk_state.get("history"):
-            sections.append("## 风险讨论记录\n" + risk_state["history"])
-        if final_state.get("final_trade_decision"):
-            sections.append("## 最终裁决\n" + final_state["final_trade_decision"])
-
-        file_path.write_text("\n\n".join(sections), encoding="utf-8")
+        self.reflector.reflect_manager(
+            self.curr_state, returns_losses, self.general_manager_memory
+        )
 
     def _serialize_message(self, message):
         """将 LangChain 消息尽力序列化为 JSON 结构。"""
@@ -313,10 +209,42 @@ class TradingAgentsGraph:
             except TypeError:
                 return str(content)
 
+        # 处理元组形式的消息（如初始 human 消息）
+        if isinstance(message, tuple) and len(message) == 2:
+            entry: Dict[str, Any] = {
+                "message_type": message[0],  # "human" 或其他类型
+                "name": None,
+                "content": _safe_content(message[1]),
+            }
+            return entry
+            
+        # 处理字典形式的消息
+        if isinstance(message, dict):
+            entry: Dict[str, Any] = {
+                "message_type": message.get("type", "unknown"),
+                "name": message.get("name", None),
+                "content": _safe_content(message.get("content", "")),
+            }
+            
+            tool_calls = message.get("tool_calls", None)
+            if tool_calls:
+                entry["tool_calls"] = tool_calls
+                
+            additional = message.get("additional_kwargs", None)
+            if additional:
+                entry["additional_kwargs"] = additional
+                
+            metadata = message.get("response_metadata", None)
+            if metadata:
+                entry["response_metadata"] = metadata
+                
+            return entry
+
+        # 处理 LangChain 消息对象
         entry: Dict[str, Any] = {
             "message_type": getattr(message, "type", message.__class__.__name__),
             "name": getattr(message, "name", None),
-            "content": _safe_content(message.content),
+            "content": _safe_content(getattr(message, "content", str(message))),
         }
 
         tool_calls = getattr(message, "tool_calls", None)
@@ -346,25 +274,3 @@ class TradingAgentsGraph:
             entry["response_metadata"] = metadata
 
         return entry
-
-    def _write_debug_transcript(
-        self,
-        trade_date: str,
-        transcript: List[Dict[str, Any]],
-        base_dir: Path,
-    ) -> None:
-        """将调试用的流式 transcript 写入 JSON，以便复盘。"""
-
-        debug_dir = self.config.get("debug_log_dir")
-        log_dir = Path(debug_dir) if debug_dir else base_dir
-        log_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%H%M%S")
-        file_path = log_dir / f"debug_transcript_{trade_date}_{timestamp}.json"
-        file_path.write_text(
-            json.dumps(transcript, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-    def process_signal(self, full_signal):
-        """调用 SignalProcessor 抽取 BUY/SELL/HOLD。"""
-        return self.signal_processor.process_signal(full_signal)

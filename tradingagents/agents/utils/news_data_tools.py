@@ -1,10 +1,11 @@
 from langchain_core.tools import tool
 from typing import Annotated, List, Dict
 from tradingagents.dataflows.odaily import (
-    get_newsflash as fetch_odaily_newsflash,
+    get_newsflash_candidates,
+    get_newsflash_content_by_id,
+    get_article_content_by_id,
     get_articles as fetch_odaily_articles,
     get_article_candidates,
-    get_article_content_by_id,
 )
 
 
@@ -24,15 +25,41 @@ def _format_odaily_entries(entries: List[Dict], entry_type: str) -> str:
 
 
 @tool
-def get_crypto_newsflash(
-    limit: Annotated[int, "Maximum number of news flashes to return"] = 20,
+def get_crypto_newsflash_candidates(
+    limit: Annotated[int, "Number of titles to retrieve"] = 40,
     lookback_hours: Annotated[int, "Lookback window in hours"] = 24,
 ) -> str:
     """
-    Retrieve crypto market news flashes from Odaily RSS and store cached copies in SQLite.
+    Retrieve recent Odaily newsflash titles with metadata for LLM screening.
     """
-    entries = fetch_odaily_newsflash(limit=limit, lookback_hours=lookback_hours)
-    return _format_odaily_entries(entries, "newsflash")
+    entries = get_newsflash_candidates(limit=limit, lookback_hours=lookback_hours)
+    if not entries:
+        return "No recent news flashes available."
+    lines = ["Recent Odaily news flashes (ID + Title):"]
+    for idx, entry in enumerate(entries, 1):
+        lines.append(f"{idx}. ID={entry['entry_id']} | Title: {entry['title']}")
+    return "\n".join(lines)
+
+
+@tool
+def get_crypto_newsflash_content(
+    entry_id: Annotated[str, "Entry ID returned from candidate list"],
+) -> str:
+    """
+    Retrieve key fields (title, summary, published) from Odaily newsflash by entry_id.
+    """
+    newsflash = get_newsflash_content_by_id(entry_id)
+    if not newsflash:
+        return f"No news flash found for entry_id={entry_id}"
+    published = newsflash.get("published") or "Unknown"
+    summary = newsflash.get("summary") or ""
+    title = newsflash.get("title") or ""
+    return (
+        f"Title: {title}\n"
+        f"Entry ID: {newsflash.get('entry_id')}\n"
+        f"Published: {published}\n\n"
+        f"Summary: {summary}"
+    )
 
 
 @tool

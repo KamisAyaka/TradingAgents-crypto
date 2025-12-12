@@ -1,4 +1,5 @@
 """
+币安市场数据工具助手
 Utility helpers for pulling market data directly from Binance public endpoints.
 We keep the logic here so analysts/tools can fetch OHLCV snapshots and compute
 basic technical indicators without relying on legacy equity vendors.
@@ -14,38 +15,70 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from scipy.signal import find_peaks
 
+# 定义技术指标列规格字典
 INDICATOR_COLUMN_SPECS = {
-    "ema_5": "REAL",
-    "ema_10": "REAL",
-    "ema_20": "REAL",
-    "macd": "REAL",
-    "macd_signal": "REAL",
-    "macd_hist": "REAL",
-    "boll_mid": "REAL",
-    "boll_upper": "REAL",
-    "boll_lower": "REAL",
-    "kdj_k": "REAL",
-    "kdj_d": "REAL",
-    "kdj_j": "REAL",
+    "ema_5": "REAL",      # 5周期指数移动平均线
+    "ema_10": "REAL",     # 10周期指数移动平均线
+    "ema_20": "REAL",     # 20周期指数移动平均线
+    "macd": "REAL",       # MACD指标值
+    "macd_signal": "REAL",# MACD信号线
+    "macd_hist": "REAL",  # MACD柱状图
+    "boll_mid": "REAL",   # 布林带中轨
+    "boll_upper": "REAL", # 布林带上轨
+    "boll_lower": "REAL", # 布林带下轨
+    "kdj_k": "REAL",      # KDJ指标K值
+    "kdj_d": "REAL",      # KDJ指标D值
+    "kdj_j": "REAL",      # KDJ指标J值
 }
+# 将技术指标列名提取为列表
 INDICATOR_COLUMNS = list(INDICATOR_COLUMN_SPECS.keys())
 
+# 定义数据存储目录路径
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+# 创建数据目录（如果不存在）
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+# 定义币安数据库文件路径
 BINANCE_DB_PATH = DATA_DIR / "binance_cache.db"
 
 
 def _ensure_indicator_columns(conn: sqlite3.Connection) -> None:
+    """
+    确保数据库表中包含所有技术指标列
+    """
+    # 获取表结构信息
     cursor = conn.execute("PRAGMA table_info(klines)")
+    # 提取现有的列名
     existing = {row[1] for row in cursor.fetchall()}
+    # 遍历技术指标列规格，为缺失的列添加到表中
     for name, col_type in INDICATOR_COLUMN_SPECS.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE klines ADD COLUMN {name} {col_type}")
 
 
 def ensure_cache_db() -> None:
+    """
+    确保币安缓存数据库存在，如果不存在则创建
+    """
+    # 连接SQLite数据库
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
+        # 创建K线数据表（如果不存在）
+        # 表结构：
+        # - symbol: 交易对符号
+        # - interval: 时间间隔
+        # - open_time: 开盘时间戳
+        # - close_time: 收盘时间戳
+        # - open: 开盘价
+        # - high: 最高价
+        # - low: 最低价
+        # - close: 收盘价
+        # - volume: 成交量
+        # - quote_volume: 成交额
+        # - trade_count: 交易次数
+        # - taker_buy_base: 主动买入基币数量
+        # - taker_buy_quote: 主动买入计价币数量
+        # - updated_at: 更新时间
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS klines (
@@ -67,20 +100,27 @@ def ensure_cache_db() -> None:
             )
             """
         )
+        # 确保技术指标列存在
         _ensure_indicator_columns(conn)
+        # 提交事务
         conn.commit()
 
 
 def _row_to_kline(row: sqlite3.Row) -> Dict[str, float]:
+    """
+    将数据库行转换为K线数据字典
+    """
+    # 将行数据转换为字典
     row_dict = dict(row)
+    # 构造K线记录
     record: Dict[str, Any] = {
-        "open_time": int(row_dict["open_time"]),
-        "close_time": int(row_dict["close_time"]),
-        "open": float(row_dict["open"]),
-        "high": float(row_dict["high"]),
-        "low": float(row_dict["low"]),
-        "close": float(row_dict["close"]),
-        "volume": float(row_dict["volume"]),
+        "open_time": int(row_dict["open_time"]),      # 开盘时间
+        "close_time": int(row_dict["close_time"]),    # 收盘时间
+        "open": float(row_dict["open"]),              # 开盘价
+        "high": float(row_dict["high"]),              # 最高价
+        "low": float(row_dict["low"]),                # 最低价
+        "close": float(row_dict["close"]),            # 收盘价
+        "volume": float(row_dict["volume"]),          # 成交量
         "quote_volume": float(row_dict["quote_volume"]) if row_dict["quote_volume"] is not None else 0.0,
         "trade_count": int(row_dict["trade_count"]) if row_dict["trade_count"] is not None else 0,
         "taker_buy_base": float(row_dict["taker_buy_base"]) if row_dict["taker_buy_base"] is not None else 0.0,
@@ -93,10 +133,26 @@ def _row_to_kline(row: sqlite3.Row) -> Dict[str, float]:
 
 
 def load_cached_klines(symbol: str, interval: str, limit: int) -> List[Dict[str, float]]:
+    """
+    从缓存数据库加载K线数据
+    
+    Args:
+        symbol: 交易对符号，如BTCUSDT
+        interval: 时间间隔，如1h, 4h, 1d等
+        limit: 返回数据条数限制
+    
+    Returns:
+        K线数据列表，每条数据包含开盘价、收盘价等信息
+    """
+    # 确保数据库存在
     ensure_cache_db()
+    # 连接数据库
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
+        # 设置行工厂，使查询结果可以通过列名访问
         conn.row_factory = sqlite3.Row
+        # 构造技术指标列选择字符串
         indicator_select = ", ".join(INDICATOR_COLUMNS)
+        # 执行查询
         cursor = conn.execute(
             f"""
             SELECT
@@ -119,117 +175,57 @@ def load_cached_klines(symbol: str, interval: str, limit: int) -> List[Dict[str,
             """,
             (symbol.upper(), interval, limit),
         )
+        # 获取所有查询结果
         rows = cursor.fetchall()
 
+    # 将每一行转换为K线数据字典
     klines = [_row_to_kline(row) for row in rows]
+    # 反转列表，使时间顺序从早到晚
     return list(reversed(klines))
 
 
-def get_cached_klines(
-    symbol: str,
-    interval: str = "1h",
-    limit: int = 200,
-) -> List[Dict[str, float]]:
-    """Public helper for retrieving klines directly from the SQLite cache."""
-    return load_cached_klines(symbol, interval, limit)
-
-
-def _ts_to_iso(ts: int) -> str:
-    return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
-
-
 def klines_to_dataframe(klines: List[Dict[str, float]]) -> pd.DataFrame:
+    """
+    将K线数据列表转换为Pandas DataFrame
+    
+    Args:
+        klines: K线数据列表
+    
+    Returns:
+        包含K线数据的DataFrame
+    """
+    # 创建DataFrame
     df = pd.DataFrame(klines)
+    # 如果DataFrame为空，直接返回
     if df.empty:
         return df
+    # 将时间戳转换为日期时间格式
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
+    # 设置索引并按时间排序
     return df.set_index("close_time").sort_index()
 
 
 def ensure_indicator_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Ensure indicator columns exist on the dataframe.
-    The actual indicator calculation happens in the fetcher when data is ingested.
+    确保DataFrame中包含所有技术指标列
+    
+    Args:
+        df: 输入的DataFrame
+    
+    Returns:
+        确保包含所有技术指标列的DataFrame
     """
+    # 如果DataFrame为空，直接返回
     if df.empty:
         return df
+    # 复制DataFrame
     df = df.copy()
+    # 为缺失的技术指标列添加NaN值
     for col in INDICATOR_COLUMNS:
         if col not in df.columns:
             df[col] = math.nan
     return df
-
-
-def _indicator_alignment(price: float, latest_row: pd.Series) -> Optional[str]:
-    """Describe whether a price aligns with key moving averages or Bollinger bands."""
-    hints = []
-    for label in ("ema_5", "ema_10", "ema_20", "boll_upper", "boll_lower"):
-        ref = latest_row.get(label)
-        if pd.isna(ref) or not ref:
-            continue
-        diff_pct = abs(price - ref) / price
-        if diff_pct <= 0.005:  # within 0.5%
-            hints.append(f"接近 {label} ({ref:.2f})")
-    if not hints:
-        return None
-    return "，并且" + "、".join(hints)
-
-
-def _find_swing_levels(
-    df: pd.DataFrame,
-    column: str,
-    window: int = 3,
-    kind: str = "high",
-) -> List[Dict[str, Any]]:
-    """
-    Identify local highs or lows as potential swing points.
-    """
-    prices = df[column]
-    volumes = df["volume"]
-    timestamps = df.index
-    levels: List[Dict[str, object]] = []
-    for i in range(window, len(prices) - window):
-        slice_ = prices.iloc[i - window : i + window + 1]
-        current = prices.iloc[i]
-        if kind == "high" and current >= slice_.max():
-            levels.append(
-                {
-                    "price": current,
-                    "timestamp": timestamps[i],
-                    "volume": volumes.iloc[i],
-                    "source": "swing_high",
-                }
-            )
-        elif kind == "low" and current <= slice_.min():
-            levels.append(
-                {
-                    "price": current,
-                    "timestamp": timestamps[i],
-                    "volume": volumes.iloc[i],
-                    "source": "swing_low",
-                }
-            )
-    return levels
-
-
-def _volume_congestion_zones(df: pd.DataFrame, bins: int = 18) -> List[Dict[str, Any]]:
-    """
-    Approximate volume profile by binning closes and aggregating volumes.
-    """
-    if df.empty:
-        return []
-    prices = df["close"].to_numpy()
-    vols = df["volume"].to_numpy()
-    hist, edges = np.histogram(prices, bins=bins, weights=vols)
-    zones: List[Dict[str, float]] = []
-    for idx, vol in enumerate(hist):
-        if vol <= 0:
-            continue
-        mid_price = (edges[idx] + edges[idx + 1]) / 2
-        zones.append({"price": mid_price, "volume": vol, "source": "volume_cluster"}) # type: ignore
-    zones.sort(key=lambda x: x["volume"], reverse=True)
-    return zones
 
 
 def summarize_market(
@@ -238,24 +234,47 @@ def summarize_market(
     interval: str,
     window: int = 30,
 ) -> str:
+    """
+    生成市场摘要信息
+    
+    Args:
+        df: 包含市场数据的DataFrame
+        symbol: 交易对符号
+        interval: 时间间隔
+        window: 窗口大小，默认为30
+    
+    Returns:
+        市场摘要字符串
+    """
+    # 如果DataFrame为空，返回提示信息
     if df.empty:
         return f"No Binance market data returned for {symbol} ({interval})."
 
+    # 获取最近的数据
     recent = df.tail(window)
+    # 获取起始和结束收盘价
     start_close = recent["close"].iloc[0]
     end_close = recent["close"].iloc[-1]
+    # 计算百分比变化
     pct = ((end_close - start_close) / start_close) * 100 if start_close else 0
+    # 获取最高价和最低价
     high = recent["high"].max()
     low = recent["low"].min()
+    # 计算平均成交量
     avg_vol = recent["volume"].mean()
 
+    # 获取最新数据行
     latest = recent.iloc[-1]
+    # 判断趋势
     trend = "up" if pct > 0.5 else "down" if pct < -0.5 else "sideways"
+    # 返回市场摘要
     return (
         f"Binance {symbol} ({interval}) snapshot over last {window} bars:\n"
         f"- Close moved from {start_close:.4f} to {end_close:.4f} ({pct:.2f}% {trend}).\n"
         f"- Range high/low: {high:.4f} / {low:.4f}.\n"
         f"- Avg volume: {avg_vol:.2f} {symbol.split('USDT')[-1]}.\n"
+        f"- EMA(5/10/20): {latest.get('ema_5', math.nan):.4f} / {latest.get('ema_10', math.nan):.4f} / {latest.get('ema_20', math.nan):.4f}\n"
+        f"- BOLL(mid/upper/lower): {latest.get('boll_mid', math.nan):.4f} / {latest.get('boll_upper', math.nan):.4f} / {latest.get('boll_lower', math.nan):.4f}\n"
         f"- KDJ K {latest.get('kdj_k', math.nan):.2f} / D {latest.get('kdj_d', math.nan):.2f} / J {latest.get('kdj_j', math.nan):.2f}.\n"
         f"- MACD {latest.get('macd', math.nan):.4f} vs signal {latest.get('macd_signal', math.nan):.4f} "
         f"(hist {latest.get('macd_hist', math.nan):.4f})."
@@ -267,116 +286,23 @@ def get_market_snapshot(
     interval: str = "1h",
     limit: int = 240,
 ) -> str:
-    klines = get_cached_klines(symbol, interval=interval, limit=limit)
-    df = ensure_indicator_data(klines_to_dataframe(klines))
-    return summarize_market(df, symbol=symbol, interval=interval)
-
-
-def get_indicator_readout(
-    symbol: str,
-    interval: str = "1h",
-    indicators: Optional[List[str]] = None,
-    limit: int = 240,
-) -> str:
-    klines = get_cached_klines(symbol, interval=interval, limit=limit)
-    df = ensure_indicator_data(klines_to_dataframe(klines))
-    if df.empty:
-        return f"No indicator data for {symbol}."
-
-    latest = df.iloc[-1]
-    indicators = indicators or [
-        "ema_5",
-        "ema_10",
-        "ema_20",
-        "macd",
-        "macd_signal",
-        "macd_hist",
-        "kdj_k",
-        "kdj_d",
-        "kdj_j",
-        "boll_upper",
-        "boll_lower",
-    ]
-    lines = [
-        f"Latest indicator readout for {symbol} ({interval}, close {_ts_to_iso(int(df.index[-1].timestamp() * 1000))}):"
-    ]
-    for name in indicators:
-        value = latest.get(name)
-        if pd.isna(value):
-            continue
-        lines.append(f"- {name}: {float(value):.4f}")
-    return "\n".join(lines)
-
-
-def analyze_support_resistance(
-    symbol: str,
-    interval: str = "1h",
-    limit: int = 240,
-) -> str:
     """
-    Produce a blended support/resistance view by combining:
-    1) price action swing levels & congestion zones,
-    2) indicator confirmation (EMA / Bollinger / KDJ / MACD).
+    获取市场快照
+    
+    Args:
+        symbol: 交易对符号
+        interval: 时间间隔，默认为1小时
+        limit: 数据条数限制，默认为240条
+    
+    Returns:
+        市场快照字符串
     """
-    levels = get_support_resistance_levels(symbol, interval=interval, limit=limit)
-    if levels.get("message") and not levels.get("supports") and not levels.get("resistances"):
-        return levels["message"]
-
-    def _format_level(level) -> str:
-        ts_str = level.get("timestamp")
-        base = f"{level['price']:.4f}"
-        if ts_str:
-            base += f"（{ts_str}）"
-        if level.get("volume"):
-            base += f"，伴随成交量 {level['volume']:.2f}"
-        if level.get("indicator_alignment"):
-            base += f"，{level['indicator_alignment']}"
-        if level.get("source"):
-            base += f"，来源：{level['source']}"
-        return base
-
-    lines = [
-        f"{symbol} ({interval}) 支撑/压力位分析：",
-        "1. 价格行为（前高/前低与成交密集区）",
-    ]
-    supports = levels.get("supports", [])
-    resistances = levels.get("resistances", [])
-    if supports:
-        lines.append("   支撑位：")
-        for lvl in supports:
-            lines.append("   - " + _format_level(lvl))
-    else:
-        lines.append("   支撑位：暂无显著 swing 低点。")
-
-    if resistances:
-        lines.append("   压力位：")
-        for lvl in resistances:
-            lines.append("   - " + _format_level(lvl))
-    else:
-        lines.append("   压力位：暂无显著 swing 高点。")
-
-    lines.append("2. 技术指标确认")
-    indicators = levels.get("indicators", {})
-    ema = indicators.get("ema", {})
-    boll = indicators.get("bollinger", {})
-    kdj = indicators.get("kdj", {})
-    macd = indicators.get("macd", {})
-    current_close = levels.get("current_close", math.nan)
-    lines.append(
-        f"   - 最新收盘价 {current_close:.4f}，EMA5/10/20 分别为 "
-        f"{ema.get('ema_5', math.nan):.2f} / "
-        f"{ema.get('ema_10', math.nan):.2f} / "
-        f"{ema.get('ema_20', math.nan):.2f}；"
-        f"布林带上/下轨 {boll.get('upper', math.nan):.2f} / "
-        f"{boll.get('lower', math.nan):.2f}。"
-    )
-    lines.append(
-        f"   - KDJ：K {kdj.get('k', math.nan):.2f} / D {kdj.get('d', math.nan):.2f} / "
-        f"J {kdj.get('j', math.nan):.2f}；MACD：{macd.get('macd', math.nan):.4f} "
-        f"vs Signal {macd.get('signal', math.nan):.4f}。"
-    )
-
-    return "\n".join(lines)
+    # 获取缓存的K线数据
+    klines = load_cached_klines(symbol, interval=interval, limit=limit)
+    # 将K线数据转换为DataFrame并确保包含技术指标列
+    df = ensure_indicator_data(klines_to_dataframe(klines))
+    # 生成市场摘要
+    return summarize_market(df, symbol=symbol, interval=interval, window=limit)
 
 
 def get_support_resistance_levels(
@@ -385,77 +311,148 @@ def get_support_resistance_levels(
     limit: int = 240,
 ) -> Dict[str, Any]:
     """
-    Return structured support/resistance information for downstream agents.
+    返回下游代理的结构化支撑/阻力信息（使用简化算法）。
+    
+    Args:
+        symbol: 交易对符号
+        interval: 时间间隔，默认为1小时
+        limit: 数据条数限制，默认为240条
+    
+    Returns:
+        包含支撑位、阻力位信息的字典
     """
-    klines = get_cached_klines(symbol, interval=interval, limit=limit)
+    # 获取缓存的K线数据
+    klines = load_cached_klines(symbol, interval=interval, limit=limit)
+    # 将K线数据转换为DataFrame并确保包含技术指标列
     df = ensure_indicator_data(klines_to_dataframe(klines))
+    # 初始化基础字典
     base: Dict[str, Any] = {
         "symbol": symbol,
         "interval": interval,
-        "supports": [],
-        "resistances": [],
+        "supports": [],      # 支撑位列表
+        "resistances": [],   # 阻力位列表
     }
+    # 如果DataFrame为空，添加消息并返回
     if df.empty:
         base["message"] = f"No Binance market data returned for {symbol} ({interval})."
         return base
 
+    # 获取当前收盘价
     current_close = df["close"].iloc[-1]
-    latest = df.iloc[-1]
-    swing_highs = _find_swing_levels(df, "high", window=4, kind="high")
-    swing_lows = _find_swing_levels(df, "low", window=4, kind="low")
-    volume_zones = _volume_congestion_zones(df, bins=18)[:6]
-
-    supports_raw = [
-        lvl for lvl in swing_lows + volume_zones if lvl["price"] <= current_close
-    ][:5]
-    resistances_raw = [
-        lvl for lvl in swing_highs + volume_zones if lvl["price"] >= current_close
-    ][:5]
-
-    def _structure_level(level: Dict[str, Any]) -> Dict[str, Any]:
-        ts = level.get("timestamp")
-        timestamp_str = (
-            ts.strftime("%Y-%m-%d %H:%M")
-            if isinstance(ts, pd.Timestamp)
-            else None
-        )
-        volume = (
-            float(level.get("volume") or 0)
-            if level.get("volume") is not None
-            else None
-        )
-        return {
-            "price": float(level["price"]),
-            "timestamp": timestamp_str,
-            "volume": volume,
-            "source": level.get("source"),
-            "indicator_alignment": _indicator_alignment(level["price"], latest),
-        }
-
-    base["supports"] = [_structure_level(lvl) for lvl in supports_raw]
-    base["resistances"] = [_structure_level(lvl) for lvl in resistances_raw]
+    
+    # 1. 识别强峰值（阻力位）
+    strong_resistance_peaks, _ = find_peaks(
+        df['high'], 
+        distance=60, 
+        prominence=200
+    )
+    
+    # 提取强峰值的对应高值
+    strong_resistances = df.iloc[strong_resistance_peaks]['high'].tolist()
+    
+    # 包括近期最高价作为额外的强峰值
+    recent_high = df['high'].iloc[-min(252, len(df)):].max()
+    strong_resistances.append(recent_high)
+    
+    # 去重
+    strong_resistances = list(set(strong_resistances))
+    
+    # 2. 识别强谷值（支撑位）
+    strong_support_troughs, _ = find_peaks(
+        -df['low'], 
+        distance=60, 
+        prominence=200
+    )
+    
+    # 提取强谷值的对应低值
+    strong_supports = df.iloc[strong_support_troughs]['low'].tolist()
+    
+    # 包括近期最低价作为额外的强谷值
+    recent_low = df['low'].iloc[-min(252, len(df)):].min()
+    strong_supports.append(recent_low)
+    
+    # 去重
+    strong_supports = list(set(strong_supports))
+    
+    # 根据当前价格过滤支撑位和阻力位
+    # 支撑位应该是当前价格下方的价格水平
+    filtered_supports = [s for s in strong_supports if s <= current_close]
+    # 阻力位应该是当前价格上方的价格水平
+    filtered_resistances = [r for r in strong_resistances if r >= current_close]
+    
+    # 直接使用价格列表
+    base["supports"] = [float(s) for s in filtered_supports]
+    base["resistances"] = [float(r) for r in filtered_resistances]
+    # 添加当前收盘价
     base["current_close"] = current_close
+    # 添加最新收盘时间
     base["latest_close_time"] = df.index[-1].isoformat()
-    base["indicators"] = {
-        "ema": {
-            "ema_5": latest.get("ema_5", math.nan),
-            "ema_10": latest.get("ema_10", math.nan),
-            "ema_20": latest.get("ema_20", math.nan),
-        },
-        "bollinger": {
-            "mid": latest.get("boll_mid", math.nan),
-            "upper": latest.get("boll_upper", math.nan),
-            "lower": latest.get("boll_lower", math.nan),
-        },
-        "kdj": {
-            "k": latest.get("kdj_k", math.nan),
-            "d": latest.get("kdj_d", math.nan),
-            "j": latest.get("kdj_j", math.nan),
-        },
-        "macd": {
-            "macd": latest.get("macd", math.nan),
-            "signal": latest.get("macd_signal", math.nan),
-            "hist": latest.get("macd_hist", math.nan),
-        },
-    }
+    
+    # 返回基础字典
     return base
+
+
+def analyze_support_resistance(
+    symbol: str,
+    interval: str = "1h",
+    limit: int = 240,
+) -> str:
+    """
+    通过简化算法生成支撑/阻力位视图
+    
+    Args:
+        symbol: 交易对符号
+        interval: 时间间隔，默认为1小时
+        limit: 数据条数限制，默认为240条
+    
+    Returns:
+        支撑/阻力位分析字符串
+    """
+    # 获取支撑/阻力位级别
+    levels = get_support_resistance_levels(symbol, interval=interval, limit=limit)
+    # 如果只有消息而没有支撑位和阻力位，返回消息
+    if levels.get("message") and not levels.get("supports") and not levels.get("resistances"):
+        return levels["message"]
+
+    # 构造输出行
+    lines = [
+        f"{symbol} ({interval}) 支撑/压力位分析：",
+    ]
+    
+    # 获取支撑位和阻力位
+    supports = levels.get("supports", [])
+    resistances = levels.get("resistances", [])
+    current_close = levels.get("current_close", math.nan)
+    
+    # 添加最新的OHLCV数据
+    # 获取最新的K线数据用于展示完整OHLCV信息
+    klines = load_cached_klines(symbol, interval=interval, limit=1)
+    if klines:
+        latest_kline = klines[-1]
+        lines.append(f"最新价格数据:")
+        lines.append(f"  开盘价: {latest_kline.get('open', math.nan):.4f}")
+        lines.append(f"  最高价: {latest_kline.get('high', math.nan):.4f}")
+        lines.append(f"  最低价: {latest_kline.get('low', math.nan):.4f}")
+        lines.append(f"  收盘价: {latest_kline.get('close', math.nan):.4f}")
+        lines.append(f"  成交量: {latest_kline.get('volume', math.nan):.2f}")
+    else:
+        lines.append(f"当前价格: {current_close:.4f}")
+    
+    # 添加支撑位信息
+    if supports:
+        lines.append("支撑位：")
+        for price in sorted(supports, reverse=True):  # 从高到低排序
+            lines.append(f"  - {price:.4f}")
+    else:
+        lines.append("支撑位：暂无强支撑位")
+
+    # 添加阻力位信息
+    if resistances:
+        lines.append("压力位：")
+        for price in sorted(resistances):  # 从低到高排序
+            lines.append(f"  - {price:.4f}")
+    else:
+        lines.append("压力位：暂无强阻力位")
+
+    # 返回连接的输出行
+    return "\n".join(lines)

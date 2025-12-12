@@ -1,5 +1,9 @@
+from typing import Sequence
+from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage
+
+from langgraph.prebuilt import ToolNode
+from langgraph.graph import StateGraph, MessagesState, START, END
 
 from tradingagents.agents.utils.crypto_market_tools import (
     get_crypto_market_data,
@@ -10,55 +14,111 @@ from tradingagents.agents.utils.crypto_market_tools import (
 def create_crypto_market_analyst(llm):
     """
     Analyst node that focuses on Binance market structure and technical context.
+    使用 LangGraph 的 ToolNode + bind_tools 模式自动循环调用工具。
     """
+
+    # 1. 绑定工具到 LLM（和官方示例一样）
+    tools = [get_crypto_market_data, get_support_resistance_levels]
+    llm_with_tools = llm.bind_tools(tools)
+
+    # 2. ToolNode：真正执行工具的节点
+    tool_node = ToolNode(tools)
+
+    # 3. 定义"是否继续"的路由逻辑（和官方示例的 should_continue 类似）
+    def should_continue(state: MessagesState):
+        messages: Sequence[BaseMessage] = state["messages"]
+        last_message = messages[-1]
+        # 如果最后一条消息里有 tool_calls，就去 tools 节点；否则结束
+        if getattr(last_message, "tool_calls", None):
+            return "tools"
+        return END
+
+    # 4. 根据不同的 system_message 构建一个图（里面包含 call_model + tools 节点）
+    def build_graph(system_message: str):
+        # 内部的 call_model 会捕获 system_message 这个闭包变量
+
+        def call_model(state: MessagesState):
+            messages = state["messages"]
+
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", system_message),
+                    MessagesPlaceholder(variable_name="messages"),
+                ]
+            )
+
+            chain = prompt | llm_with_tools
+            # 这里传入的是 {"messages": messages}，对应 MessagesPlaceholder
+            response = chain.invoke({"messages": messages})
+            return {"messages": [response]}
+
+        builder = StateGraph(MessagesState)
+        builder.add_node("call_model", call_model)
+        builder.add_node("tools", tool_node)
+
+        builder.add_edge(START, "call_model")
+        builder.add_conditional_edges("call_model", should_continue, ["tools", END])
+        builder.add_edge("tools", "call_model")
+
+        return builder.compile()
 
     def crypto_market_node(state):
         current_date = state.get("trade_date", "Unknown date")
         symbol = state.get("asset_of_interest", "BTCUSDT")
 
+        base_system_message = (
+            "你是一名专注于币安现货数据的加密市场技术分析师。请分析给定交易对的市场结构和技术上下文，输出以交易执行为目标的分析。\n"
+            "请严格按照以下步骤进行分析：\n"
+            "1. 调用行情数据工具获取数据\n"
+            "2. 调用支撑/阻力工具获取关键技术价位\n"
+            "3. 将均线、MACD、KDJ、布林带等指标的共振映射到可执行的偏向（多/空/观望）\n"
+            "4. 给出具体的技术分析结论以及可能的价格走势预测\n"
+            "5. 最后只输出一个严格的JSON格式结果，不要包含其他任何文字\n\n"
+            "输出的JSON格式示例：\n"
+            "{{\n"
+            '  "analysis_date": "YYYY-MM-DD",\n'
+            '  "asset": "crypto asset",\n'
+            '  "overall_bias": "bullish|bearish|neutral",\n'
+            '  "key_levels": [\n'
+            '    {{\n'
+            '      "type": "support/resistance",\n'
+            '      "price": 1234,\n'
+            '      "confidence": "high/medium/low",\n'
+            '    }}\n'
+            '  ],\n'
+            '  "technical_signals": [\n'
+            '    {{\n'
+            '      "indicator": "macd",\n'
+            '      "signal": "bullish|bearish|neutral",\n'
+            '      "strength": "strong/medium/weak"\n'
+            '    }}\n'
+            '  ],\n'
+            '  "market_structure": "市场结构分析",\n'
+            '  "risk_assessment": "风险评估",\n'
+            "}}"
+        )
+
+        # 加上团队/日期/资产的前置说明（类似你原来的 system 模板）
         system_message = (
-            "你是一名专注于币安现货数据的加密市场技术分析师。请利用提供的 Binance 工具获取 OHLCV、EMA5/10/20、布林带、MACD、KDJ 以及结构化的支撑/压力数据，输出以交易执行为目标的分析。\n"
-            "- 评估动能、波动率、关键结构位，尤其关注 `get_support_resistance_levels` 返回的价位与指标对齐情况。\n"
-            "- 将均线、MACD、KDJ、布林带等指标的共振映射到可执行的偏向（多/空/观望），并说明这些信号对突破或均值回归情景的触发条件与失效价位。\n"
-            "- 根据杠杆最低 5x 的假设，评估当前到支撑/压力的距离是否足以放置止损，不满足时要强调风险或建议观望。\n"
-            "- 最后附上一个JSON结构输出，包含时间框架、关键价位、预计触发条件与置信度，明确引用所用指标或支撑/压力来源。"
+            "你隶属于一个多智能体的加密研究团队。请调用可用工具获取更多信息。"
+            f" 当前日期：{current_date}，关注交易对：{symbol}。\n"
+            f"{base_system_message}"
         )
 
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "你正在与其他加密分析师协同工作。如需更多数据请调用币安行情工具。"
-                    " 当前日期：{current_date}，关注交易对：{symbol}。\n{system_message}",
-                ),
-                MessagesPlaceholder(variable_name="messages"),
-            ]
-        )
+        # 为当前这次调用构建一张图（包含 call_model + tools + 循环）
+        graph = build_graph(system_message)
 
-        market_snapshot = get_crypto_market_data.invoke({"symbol": symbol, "interval": "1h", "limit": 240})
-        support_levels = get_support_resistance_levels.invoke(
-            {"symbol": symbol, "interval": "1h", "limit": 240}
-        )
+        # 只传递原始对话消息，工具调用由图自动循环处理
+        conversation = list(state["messages"])
 
-        prompt = prompt.partial(system_message=system_message, current_date=current_date, symbol=symbol)
-        chain = prompt | llm
+        result_state = graph.invoke({"messages": conversation})
+        final_messages: Sequence[BaseMessage] = result_state["messages"]
+        result = final_messages[-1]
 
-        conversation = list(state["messages"]) + [
-            HumanMessage(
-                content=(
-                    "【Binance 行情快照】\n"
-                    f"{market_snapshot}\n\n"
-                    "【支撑/压力分析】\n"
-                    f"{support_levels}"
-                )
-            )
-        ]
-
-        result = chain.invoke(conversation)
-        report = result.content or "【错误】行情分析生成失败。"
+        report = result.content or ""
 
         return {
-            "messages": [result],
+            "messages": final_messages,
             "market_report": report,
         }
 

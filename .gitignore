@@ -10,3 +10,4 @@ eval_data/
 *.egg-info/
 .env
 tradingagents/data/
+.langgraph_api/
