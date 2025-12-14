@@ -13,6 +13,7 @@ import math
 import os
 import sqlite3
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -351,26 +352,46 @@ def fetch_and_store_klines(
     return klines
 
 
+def _sync_single(symbol: str, interval: str, limit: int) -> Dict[str, Any]:
+    """内部辅助：抓取并返回单个 symbol/interval 的结果摘要。"""
+    klines = fetch_and_store_klines(symbol, interval=interval, limit=limit)
+    return {
+        "count": len(klines),
+        "latest_close_time": klines[-1]["close_time"] if klines else None,
+    }
+
+
 def sync_binance_pairs(
     symbols: List[str],
     intervals: List[str],
     limit: int = 500,
+    max_workers: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    批量刷新多个交易对/周期的行情。
-    返回 {symbol: {interval: {count/latest_close}}} 结构，便于 runner 记录结果。
+    批量刷新多个交易对/周期的行情（并发抓取）。
+    返回 {symbol: {interval: {count/latest_close_time}}} 结构，便于 runner 记录结果。
     """
-    results: Dict[str, Any] = {}
-    for symbol in symbols:
-        sym_summary: Dict[str, Any] = {}
-        for interval in intervals:
+    if not symbols or not intervals:
+        return {}
+
+    total_tasks = len(symbols) * len(intervals)
+    worker_count = max_workers or min(8, total_tasks)
+    worker_count = max(worker_count, 1)
+
+    results: Dict[str, Any] = {symbol.upper(): {} for symbol in symbols}
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_map = {}
+        for symbol in symbols:
+            for interval in intervals:
+                future = executor.submit(_sync_single, symbol, interval, limit)
+                future_map[future] = (symbol.upper(), interval)
+
+        for future in as_completed(future_map):
+            symbol, interval = future_map[future]
             try:
-                klines = fetch_and_store_klines(symbol, interval=interval, limit=limit)
-                sym_summary[interval] = {
-                    "count": len(klines),
-                    "latest_close": klines[-1]["close_time"] if klines else None,
-                }
+                summary = future.result()
             except Exception as exc:  # pylint: disable=broad-except
-                sym_summary[interval] = {"error": str(exc)}
-        results[symbol.upper()] = sym_summary
+                summary = {"error": str(exc)}
+            results[symbol][interval] = summary
+
     return results

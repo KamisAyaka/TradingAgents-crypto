@@ -1,6 +1,6 @@
 # TradingAgents/graph/propagation.py
 
-from typing import Dict, Any
+from typing import Dict, Any, Iterable, List, Sequence, Union
 from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskReviewState,
@@ -15,13 +15,22 @@ class Propagator:
         self.max_recur_limit = max_recur_limit
 
     def create_initial_state(
-        self, asset_symbol: str, trade_date: str
+        self, asset_symbols: Union[str, Sequence[str]], trade_date: str
     ) -> Dict[str, Any]:
         """Create the initial state for the agent graph."""
+        if isinstance(asset_symbols, str):
+            assets: List[str] = [asset_symbols]
+        else:
+            assets = [symbol for symbol in asset_symbols if symbol]
+        if not assets:
+            raise ValueError("必须提供至少一个交易对。")
+        asset_desc = ", ".join(assets)
         return {
-            "messages": [("human", asset_symbol)],
-            "asset_of_interest": asset_symbol,
+            "messages": [("human", f"多资产交易分析：{asset_desc}")],
+            "assets_under_analysis": assets,
             "trade_date": str(trade_date),
+            "min_leverage": 1.0,
+            "max_leverage": 1.0,
             "investment_debate_state": InvestDebateState(
                 {
                     "history": "",

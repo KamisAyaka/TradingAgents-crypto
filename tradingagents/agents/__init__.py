@@ -10,7 +10,7 @@ from .analysts.longform_cache_loader import create_longform_cache_loader
 from .researchers.bear_researcher import create_bear_researcher
 from .researchers.bull_researcher import create_bull_researcher
 
-from .risk_mgmt.risk_manager import create_risk_manager
+from .risk_manager.risk_manager import create_risk_manager
 
 from .managers.general_manager import create_manager
 

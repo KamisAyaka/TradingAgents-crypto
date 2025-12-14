@@ -8,8 +8,8 @@
 
 2. **构造初始状态**
 
-   - 调用 `TradingAgentsGraph.propagate(asset_symbol, trade_date)`。
-   - 内部使用 `Propagator.create_initial_state(asset_symbol, trade_date)` 得到初始 `AgentState`。
+   - 调用 `TradingAgentsGraph.propagate(asset_symbols, trade_date, available_capital=...)`（`asset_symbols` 可为单个交易对或列表，`available_capital` 用于执行链路的资金分配）。
+   - 内部使用 `Propagator.create_initial_state(asset_symbols, trade_date)` 得到初始 `AgentState`，并在外部注入资金等额外字段。
 
 3. **基础研究阶段**
 

@@ -44,7 +44,7 @@ async def _run_loop(
 
 def main() -> None:
     """读取环境变量并启动同步循环。"""
-    symbols = [s.strip().upper() for s in os.getenv("BINANCE_SYMBOLS", "BTCUSDT").split(",") if s.strip()]
+    symbols = [s.strip().upper() for s in os.getenv("BINANCE_SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
     intervals = [i.strip() for i in os.getenv("BINANCE_INTERVALS", "1h,4h").split(",") if i.strip()]
     limit = int(os.getenv("BINANCE_SYNC_LIMIT", "50"))
     refresh = int(os.getenv("BINANCE_SYNC_INTERVAL", "900"))  # 默认 15 分钟

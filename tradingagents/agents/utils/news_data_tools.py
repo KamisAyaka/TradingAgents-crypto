@@ -24,10 +24,22 @@ def _format_odaily_entries(entries: List[Dict], entry_type: str) -> str:
     return "\n".join(lines)
 
 
+def _parse_entry_ids(raw: str) -> List[str]:
+    """Normalize comma/newline separated entry IDs."""
+    if not raw:
+        return []
+    normalized = raw.replace("\n", ",")
+    return [
+        token.strip()
+        for token in normalized.split(",")
+        if token.strip()
+    ]
+
+
 @tool
 def get_crypto_newsflash_candidates(
     limit: Annotated[int, "Number of titles to retrieve"] = 40,
-    lookback_hours: Annotated[int, "Lookback window in hours"] = 24,
+    lookback_hours: Annotated[int, "Lookback window in hours"] = 6,
 ) -> str:
     """
     Retrieve recent Odaily newsflash titles with metadata for LLM screening.
@@ -43,23 +55,32 @@ def get_crypto_newsflash_candidates(
 
 @tool
 def get_crypto_newsflash_content(
-    entry_id: Annotated[str, "Entry ID returned from candidate list"],
+    entry_ids: Annotated[str, "Comma-separated entry IDs returned from candidate list"],
 ) -> str:
     """
-    Retrieve key fields (title, summary, published) from Odaily newsflash by entry_id.
+    Retrieve key fields (title, summary, published) from Odaily newsflashes by entry_id list.
     """
-    newsflash = get_newsflash_content_by_id(entry_id)
-    if not newsflash:
-        return f"No news flash found for entry_id={entry_id}"
-    published = newsflash.get("published") or "Unknown"
-    summary = newsflash.get("summary") or ""
-    title = newsflash.get("title") or ""
-    return (
-        f"Title: {title}\n"
-        f"Entry ID: {newsflash.get('entry_id')}\n"
-        f"Published: {published}\n\n"
-        f"Summary: {summary}"
-    )
+    parsed_ids = _parse_entry_ids(entry_ids)
+    if not parsed_ids:
+        return "No valid entry IDs were provided."
+
+    chunks: List[str] = []
+    for entry_id in parsed_ids:
+        newsflash = get_newsflash_content_by_id(entry_id)
+        if not newsflash:
+            chunks.append(f"Entry ID {entry_id}: not found.")
+            continue
+        published = newsflash.get("published") or "Unknown"
+        summary = newsflash.get("summary") or ""
+        title = newsflash.get("title") or ""
+        chunks.append(
+            f"Title: {title}\n"
+            f"Entry ID: {newsflash.get('entry_id')}\n"
+            f"Published: {published}\n\n"
+            f"Summary: {summary}"
+        )
+
+    return "\n\n".join(chunks)
 
 
 @tool

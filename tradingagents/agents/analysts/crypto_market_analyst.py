@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Sequence
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -6,9 +7,10 @@ from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, MessagesState, START, END
 
 from tradingagents.agents.utils.crypto_market_tools import (
-    get_crypto_market_data,
-    get_support_resistance_levels,
+    get_crypto_market_batch,
+    get_support_resistance_batch,
 )
+from tradingagents.constants import DEFAULT_ASSETS
 
 
 def create_crypto_market_analyst(llm):
@@ -18,7 +20,10 @@ def create_crypto_market_analyst(llm):
     """
 
     # 1. 绑定工具到 LLM（和官方示例一样）
-    tools = [get_crypto_market_data, get_support_resistance_levels]
+    tools = [
+        get_crypto_market_batch,
+        get_support_resistance_batch,
+    ]
     llm_with_tools = llm.bind_tools(tools)
 
     # 2. ToolNode：真正执行工具的节点
@@ -63,58 +68,77 @@ def create_crypto_market_analyst(llm):
         return builder.compile()
 
     def crypto_market_node(state):
-        current_date = state.get("trade_date", "Unknown date")
-        symbol = state.get("asset_of_interest", "BTCUSDT")
+        current_date = state.get("trade_date") or date.today().isoformat()
+        assets = state.get("assets_under_analysis") or list(DEFAULT_ASSETS)
+        asset_list = ", ".join(assets)
 
-        base_system_message = (
-            "你是一名专注于币安现货数据的加密市场技术分析师。请分析给定交易对的市场结构和技术上下文，输出以交易执行为目标的分析。\n"
-            "请严格按照以下步骤进行分析：\n"
-            "1. 调用行情数据工具获取数据\n"
-            "2. 调用支撑/阻力工具获取关键技术价位\n"
-            "3. 将均线、MACD、KDJ、布林带等指标的共振映射到可执行的偏向（多/空/观望）\n"
-            "4. 给出具体的技术分析结论以及可能的价格走势预测\n"
-            "5. 最后只输出一个严格的JSON格式结果，不要包含其他任何文字\n\n"
-            "输出的JSON格式示例：\n"
-            "{{\n"
-            '  "analysis_date": "YYYY-MM-DD",\n'
-            '  "asset": "crypto asset",\n'
-            '  "overall_bias": "bullish|bearish|neutral",\n'
-            '  "key_levels": [\n'
-            '    {{\n'
-            '      "type": "support/resistance",\n'
-            '      "price": 1234,\n'
-            '      "confidence": "high/medium/low",\n'
-            '    }}\n'
-            '  ],\n'
-            '  "technical_signals": [\n'
-            '    {{\n'
-            '      "indicator": "macd",\n'
-            '      "signal": "bullish|bearish|neutral",\n'
-            '      "strength": "strong/medium/weak"\n'
-            '    }}\n'
-            '  ],\n'
-            '  "market_structure": "市场结构分析",\n'
-            '  "risk_assessment": "风险评估",\n'
-            "}}"
-        )
+        base_system_message = """
+你是专注于加密市场的技术分析师，必须在一次推理中覆盖多个交易对。对于列表中的每个资产你都要：
+1. 使用批量工具 `get_crypto_market_batch` / `get_support_resistance_batch`，一次性传入完整资产列表（逗号分隔），获取 OHLCV、成交量、区间与关键价位。
+2. 提炼趋势与指标共识（均线/MACD/KDJ/布林带等），标出触发/失效条件。
+3. 给出 bull/base/bear 三种路径，以便 Trader/风险经理掌握触发器。
+4. 在 multi-asset 总结中对比不同资产的节奏（谁更强、谁更弱、相关性/共振风险）。
+5. 仅输出单行 JSON，不得附加其他文字。
 
-        # 加上团队/日期/资产的前置说明（类似你原来的 system 模板）
+JSON 结构示例：
+{{
+  "analysis_date": "YYYY-MM-DD",
+  "assets": ["ASSET1","ASSET2"],
+  "per_asset": [
+    {{
+      "symbol": "ASSET1",
+      "trend_view": {{
+        "direction": "bullish|bearish|range",
+        "evidence": ["依据"],
+        "triggers": ["触发条件"],
+        "invalidations": ["失效条件"]
+      }},
+      "levels": [
+        {{
+          "type": "support|resistance",
+          "range": "价格区间",
+          "confidence": "high|medium|low"
+        }}
+      ],
+      "scenario_map": [
+        {{
+          "case": "bull|base|bear",
+          "path": "行情演绎",
+          "fail_if": "终止条件"
+        }}
+      ],
+      "indicator_summary": "一句话指标共识"
+    }}
+  ],
+  "multi_asset_summary": {{
+    "lead_assets": ["强势资产"],
+    "lag_assets": ["弱势资产"],
+    "shared_risks": ["共振风险"],
+    "watchlist": ["跨资产需要监测的信号"]
+  }},
+}}
+""".strip()
+
         system_message = (
-            "你隶属于一个多智能体的加密研究团队。请调用可用工具获取更多信息。"
-            f" 当前日期：{current_date}，关注交易对：{symbol}。\n"
+            "你隶属于一个多智能体的加密研究团队。"
+            f" 当前日期：{current_date}，本轮需要覆盖的资产：{asset_list}。\n"
             f"{base_system_message}"
         )
 
-        # 为当前这次调用构建一张图（包含 call_model + tools + 循环）
         graph = build_graph(system_message)
-
-        # 只传递原始对话消息，工具调用由图自动循环处理
         conversation = list(state["messages"])
+        conversation.append(
+            (
+                "human",
+                f"请使用统一框架依次分析以下资产：{asset_list}，并输出多资产 JSON 报告。",
+            )
+        )
 
-        result_state = graph.invoke({"messages": conversation})
+        result_state = graph.invoke(
+            {"messages": conversation}, config={"recursion_limit": 100}
+        )
         final_messages: Sequence[BaseMessage] = result_state["messages"]
         result = final_messages[-1]
-
         report = result.content or ""
 
         return {

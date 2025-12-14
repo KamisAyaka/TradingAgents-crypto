@@ -29,8 +29,19 @@ class RiskReviewState(TypedDict):
 
 
 class AgentState(MessagesState):
-    asset_of_interest: Annotated[str, "Crypto asset / trading pair under analysis"]
+    assets_under_analysis: Annotated[
+        List[str], "All crypto assets handled in the current run"
+    ]
     trade_date: Annotated[str, "What date we are trading at"]
+    available_capital: Annotated[
+        float, "User-provided capital that Trader/Risk/Manager can allocate"
+    ]
+    min_leverage: Annotated[
+        float, "Minimum leverage allowed for this trading session"
+    ]
+    max_leverage: Annotated[
+        float, "Maximum leverage allowed for this trading session"
+    ]
 
     sender: Annotated[str, "Agent that sent this message"]
 

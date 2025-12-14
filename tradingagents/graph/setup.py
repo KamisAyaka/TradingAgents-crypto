@@ -21,7 +21,6 @@ class GraphSetup:
         bull_memory,
         bear_memory,
         trader_memory,
-        invest_judge_memory,
         risk_manager_memory,
         general_manager_memory,
         conditional_logic: ConditionalLogic,
@@ -33,7 +32,6 @@ class GraphSetup:
         self.bull_memory = bull_memory
         self.bear_memory = bear_memory
         self.trader_memory = trader_memory
-        self.invest_judge_memory = invest_judge_memory
         self.risk_manager_memory = risk_manager_memory
         self.general_manager_memory = general_manager_memory
         self.conditional_logic = conditional_logic
@@ -66,7 +64,7 @@ class GraphSetup:
 
         if "newsflash" in selected_analysts:
             analyst_nodes["newsflash"] = create_crypto_newsflash_analyst(
-                self.deep_thinking_llm
+                self.quick_thinking_llm
             )
             delete_nodes["newsflash"] = create_msg_delete()
             tool_nodes["newsflash"] = self.tool_nodes["newsflash"]
@@ -83,7 +81,7 @@ class GraphSetup:
             self.quick_thinking_llm, self.bear_memory
         )
         trader_node = create_trader(
-            self.quick_thinking_llm, self.trader_memory, self.invest_judge_memory
+            self.quick_thinking_llm, self.trader_memory
         )
 
         # 创建风险讨论节点

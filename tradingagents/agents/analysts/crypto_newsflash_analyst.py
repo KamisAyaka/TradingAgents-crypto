@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Sequence, Any
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -9,6 +10,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_crypto_newsflash_candidates,
     get_crypto_newsflash_content,
 )
+from tradingagents.constants import DEFAULT_ASSETS
 
 
 def _extract_text_from_message(message: Any) -> str:
@@ -90,50 +92,74 @@ def create_crypto_newsflash_analyst(llm):
 
     # 对外暴露的节点函数
     def crypto_newsflash_node(state):
-        current_date = state.get("trade_date", "Unknown date")
-        asset = state.get("asset_of_interest", "BTCUSDT")
+        current_date = state.get("trade_date") or date.today().isoformat()
+        assets = state.get("assets_under_analysis") or list(DEFAULT_ASSETS)
+        asset_list = ", ".join(assets)
+        base_system_message = f"""
+你是一名加密快讯分析师，需要在一次推理中梳理 Odaily 最新短新闻，并提炼其对多资产组合的影响。
+务必遵循以下流程：
+1. 先调用候选列表工具拉取最近 24h 的快讯标题与时间戳。
+2. 再根据标题挑选与 {asset_list} 直接相关或可能影响这些资产/宏观情绪的条目，调用内容工具时一次性传入逗号分隔的 entry_id 列表批量取回正文。
+3. 将所有快讯压缩为 3-6 个主题集群（监管、链上、宏观、资金流等），概述关键事实、触发背景与方向，不需要逐条列出所有事件。
+4. 对每个集群说明可能受影响的资产/板块以及净效应或潜在矛盾。
+5. 在整体结论中给出短期 (intraday-3d) 与后续观察期 (3-5d) 的叙事/价格路径、跨资产共振或分化信号，以及需要重点跟踪的指标。
+6. 最后仅输出单行 JSON，严格遵守字段定义，不得附加其他文字。
 
-        base_system_message = (
-            "你是一名加密快讯分析师，负责梳理 Odaily 最新的短新闻，并说明其对交易的影响。\n"
-            "请严格按照以下步骤进行分析：\n"
-            "1. 调用候选列表工具获取最新的快讯标题\n"
-            "2. 根据标题选择你感兴趣的快讯，调用内容工具获取详情\n"
-            "3. 分析每条事件、标注多空倾向，并强调对数字资产交易者的可执行含义\n"
-            "4. 将同类型事件（协议升级、监管动作等）聚合点评\n"
-            "5. 给出具体结论以及可能的价格/情绪冲击\n"
-            "6. 最后只输出一个严格的JSON格式结果，不要包含其他任何文字\n\n"
-            "输出的JSON格式示例：\n"
-            "{{\n"
-            '  "analysis_date": "YYYY-MM-DD",\n'
-            '  "asset": "crypto asset",\n'
-            '  "overall_sentiment": "bullish|bearish|neutral",\n'
-            '  "key_events": [\n'
-            '    {{\n'
-            '      "title": "新闻标题",\n'
-            '      "sentiment": "bullish|bearish|neutral",\n'
-            '      "impact": "high|medium|low",\n'
-            '      "summary": "事件摘要",\n'
-            '      "implications": "对交易的影响"\n'
-            '    }}\n'
-            '  ],\n'
-            '  "market_impact": "总体市场影响分析",\n'
-            "}}"
-        )
+JSON 结构示例：
+{{{{
+  "analysis_date": "YYYY-MM-DD",
+  "assets": ["ASSET1","ASSET2"],
+  "sentiment_summary": {{{{
+    "overall": "bullish|bearish|neutral",
+    "confidence": "high|medium|low",
+    "rationale": "一句话说明主因"
+  }}}},
+  "themes": [
+    {{{{
+      "theme": "regulation|macro|exchange|onchain|project|security",
+      "highlights": [
+        "关键事件摘要1",
+        "关键事件摘要2"
+      ],
+      "impacted_assets": ["ASSET1","ASSET2"],
+      "net_effect": "bullish|bearish|mixed",
+      "confidence": "high|medium|low"
+    }}}}
+  ],
+  "asset_impacts": [
+    {{{{
+      "asset": "ASSET1",
+      "net_direction": "bullish|bearish|neutral",
+      "drivers": ["引用主题或关键事件"],
+      "position_hint": "仓位/情绪提示或触发条件"
+    }}}}
+  ],
+  "impact_assessment": {{{{
+    "short_term": "当日-3天可能的情绪/价格路径",
+    "follow_through": "3-5天可能的延续/反转情形"
+  }}}},
+  "watchlist": ["需要继续跟进的事件/指标"]
+}}}}
+""".strip()
 
-        # 加上协作、多智能体、日期、资产的上下文
         system_message = (
-            "你隶属于一个多智能体的加密研究团队。请调用可用工具获取最新的新闻。"
-            f" 当前日期：{current_date}，关注资产：{asset}。\n"
+            "你隶属于一个多智能体的加密研究团队。"
+            f" 当前日期：{current_date}，本轮关注资产：{asset_list}。\n"
             f"{base_system_message}"
         )
 
-        # 为本次任务构建一张 Graph
         graph = build_graph(system_message)
-
-        # 只传递原始消息，工具调用交给 Graph 自动处理
         conversation = list(state["messages"])
+        conversation.append(
+                    (
+                        "human",
+                        f"请集中分析与以下资产有关的快讯：{asset_list}，并输出多资产 JSON 报告。",
+                    )
+        )
 
-        result_state = graph.invoke({"messages": conversation})
+        result_state = graph.invoke(
+            {"messages": conversation}, config={"recursion_limit": 100}
+        )
         final_messages: Sequence[BaseMessage] = result_state["messages"]
         result: Any = final_messages[-1]
 

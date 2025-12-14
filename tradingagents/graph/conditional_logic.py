@@ -1,5 +1,7 @@
 # TradingAgents/graph/conditional_logic.py
 
+import json
+
 from tradingagents.agents.utils.agent_states import AgentState
 
 
@@ -41,12 +43,32 @@ class ConditionalLogic:
 
         count = int(raw.get("count", 0) or 0)
         current_response = str(raw.get("current_response", "") or "")
+        last_speaker = str(raw.get("last_speaker", "") or "").lower()
+
+        if not last_speaker and current_response:
+            try:
+                parsed = json.loads(current_response)
+                speaker = str(parsed.get("speaker", "") or "")
+                if speaker:
+                    last_speaker = speaker.lower()
+            except Exception:
+                lowered = current_response.lower().strip()
+                if lowered.startswith("bull"):
+                    last_speaker = "bull"
+                elif lowered.startswith("bear"):
+                    last_speaker = "bear"
 
         # 达到设定轮次后交给交易员裁决
         if count >= 2 * self.max_debate_rounds:
             return "Trader"
 
         # 根据最近一次回应的说话人决定下一位
-        if current_response.startswith("Bull"):
+        if last_speaker.startswith("bull"):
+            return "Bear Researcher"
+        if last_speaker.startswith("bear"):
+            return "Bull Researcher"
+
+        # Fallback: alternate speakers by round count
+        if count % 2 == 1:
             return "Bear Researcher"
         return "Bull Researcher"

@@ -2,8 +2,8 @@ from langchain_core.messages import HumanMessage, RemoveMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from tradingagents.agents.utils.crypto_market_tools import (
-    get_crypto_market_data,
-    get_support_resistance_levels,
+    get_crypto_market_batch,
+    get_support_resistance_batch,
 )
 from tradingagents.agents.utils.news_data_tools import (
     get_crypto_longform_articles,

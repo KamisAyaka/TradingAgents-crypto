@@ -17,6 +17,9 @@ DEFAULT_CONFIG = {
     # Memory settings
     "use_chroma_memory": True,
     "chroma_path": os.path.join(os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"), "chroma_store"),
+    # Trading constraints
+    "min_leverage": 1.0,
+    "max_leverage": 3.0,
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_recur_limit": 100,

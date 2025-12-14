@@ -69,7 +69,7 @@ uv sync
 
 ### 运行一次完整流程
 
-当前默认入口是 `main.py`，会用多 Agent 框架分析 `BTCUSDT`：
+当前默认入口是 `main.py`，会用多 Agent 框架分析多个交易对（示例：`BTCUSDT` + `ETHUSDT`），并支持传入一次运行可支配的总资金：
 
 ```bash
 python main.py
@@ -78,9 +78,9 @@ python main.py
 它会：
 
 1. 构建一个 `TradingAgentsGraph`，注入 LLM、工具与记忆。
-2. 按当天日期和 `BTCUSDT` 作为资产符号初始化状态。
-3. 依次调用行情/快讯/长文分析师 → 牛熊辩论 → 风险讨论 → 风险法官。
-4. 控制台打印最终的交易建议（买入/卖出/观望 + 理由）。
+2. 默认按当天日期和你传入的资产列表初始化（若缺省则使用 `BTCUSDT`, `ETHUSDT`；日期默认当天 `ISO8601`），并可选传入 `available_capital`（默认 10,000 美元记账单位）供 Trader/风控层分配。
+3. 依次调用行情/快讯/长文分析师（每个分析师会对资产列表逐个出报告）→ 牛熊辩论 → 风险讨论 → 风险法官。
+4. 控制台打印整合后的交易建议（多资产买入/卖出/观望 + 理由）。
 
 如果你使用 LangGraph Dev，可以直接用仓库自带的配置：
 
@@ -94,11 +94,11 @@ langgraph dev
 
 ## 代码结构一览
 
-- `main.py`：示例入口，演示如何配置 LLM 并调用 `TradingAgentsGraph.propagate`。
+- `main.py`：示例入口，演示如何配置 LLM 并调用支持多资产的 `TradingAgentsGraph.propagate`。
 - `tradingagents/default_config.py`：所有 LLM/内存/日志相关的默认配置。
 - `tradingagents/graph/`
   - `setup.py`：定义整套多 Agent 工作流图（StateGraph wiring）。
-  - `propagation.py`：初始化状态（`asset_of_interest`、日期、debate state 等）。
+  - `propagation.py`：初始化状态（`assets_under_analysis`、日期、debate state 等）。
   - `trading_graph.py`：对外的高层封装（`TradingAgentsGraph`），包含 `propagate` / `reflect_and_remember`。
   - `conditional_logic.py`：控制牛熊辩论的轮数与轮转逻辑。
   - `signal_processing.py`：将复杂讨论结果压缩为最终信号字符串。

@@ -224,14 +224,18 @@ def get_newsflash_content_by_id(entry_id: str) -> Optional[Dict[str, Any]]:
     return _query_newsflash_by_id(entry_id)
 
 
+GLOBAL_LONGFORM_KEY = "__GLOBAL_LONGFORM__"
+
+
 def save_longform_analysis(
-    asset: str,
     report: str,
+    asset: Optional[str] = None,
     analysis_date: Optional[str] = None,
 ) -> None:
     """Persist a synthesized longform analysis so intraday runs can reuse it."""
     ensure_db()
     timestamp = _utcnow().isoformat()
+    asset_key = asset or GLOBAL_LONGFORM_KEY
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """
@@ -241,29 +245,36 @@ def save_longform_analysis(
                 report=excluded.report,
                 created_at=excluded.created_at
             """,
-            (asset, report, analysis_date, timestamp),
+            (asset_key, report, analysis_date, timestamp),
         )
         conn.commit()
 
 
 def get_latest_longform_analysis(
-    asset: str,
+    asset: Optional[str] = None,
     max_age_days: Optional[int] = 14,
 ) -> Optional[Dict[str, Any]]:
-    """Fetch the newest cached longform analysis for the requested asset."""
+    """Fetch the newest cached longform analysis (optionally filtered by asset)."""
     ensure_db()
-    params: List[Any] = [asset]
-    cutoff_clause = ""
+    params: List[Any] = []
+    conditions: List[str] = []
+
+    if asset:
+        conditions.append("asset = ?")
+        params.append(asset)
     if max_age_days is not None:
         cutoff = (_utcnow() - timedelta(days=max_age_days)).isoformat()
-        cutoff_clause = "AND datetime(created_at) >= datetime(?)"
+        conditions.append("datetime(created_at) >= datetime(?)")
         params.append(cutoff)
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
 
     query = f"""
         SELECT report, analysis_date, created_at
         FROM longform_analysis
-        WHERE asset = ?
-        {cutoff_clause}
+        {where_clause}
         ORDER BY datetime(COALESCE(analysis_date, created_at)) DESC,
                  datetime(created_at) DESC
         LIMIT 1

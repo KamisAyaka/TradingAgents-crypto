@@ -90,8 +90,8 @@ class Reflector:
         )
         bear_memory.add_situations([(situation, result)])
 
-    def reflect_trader(self, current_state, returns_losses, trader_memory, invest_judge_memory):
-        """反思交易员（兼裁决者）的决策，并同步到两类记忆。"""
+    def reflect_trader(self, current_state, returns_losses, trader_memory):
+        """反思交易员的决策，并写入交易记忆。"""
         situation = self._extract_current_situation(current_state)
         trader_decision = current_state["trader_investment_plan"]
 
@@ -99,7 +99,6 @@ class Reflector:
             "TRADER", trader_decision, situation, returns_losses
         )
         trader_memory.add_situations([(situation, result)])
-        invest_judge_memory.add_situations([(situation, result)])
 
     def reflect_risk_manager(self, current_state, returns_losses, risk_manager_memory):
         """反思风险经理的评估。"""

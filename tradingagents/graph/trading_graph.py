@@ -2,6 +2,7 @@
 
 import os
 import json
+from datetime import date
 from typing import Dict, Any, Optional, cast
 
 from langchain_openai import ChatOpenAI
@@ -19,8 +20,8 @@ from tradingagents.agents.utils.agent_states import (
 
 # Import the new abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
-    get_crypto_market_data,
-    get_support_resistance_levels,
+    get_crypto_market_batch,
+    get_support_resistance_batch,
     get_crypto_newsflash_candidates,
     get_crypto_longform_candidates,
     get_crypto_article_content,
@@ -82,7 +83,6 @@ class TradingAgentsGraph:
         self.bull_memory = FinancialSituationMemory("bull_memory", self.config)
         self.bear_memory = FinancialSituationMemory("bear_memory", self.config)
         self.trader_memory = FinancialSituationMemory("trader_memory", self.config)
-        self.invest_judge_memory = FinancialSituationMemory("invest_judge_memory", self.config)
         self.risk_manager_memory = FinancialSituationMemory("risk_manager_memory", self.config)
         self.general_manager_memory = FinancialSituationMemory("general_manager_memory", self.config)
 
@@ -100,7 +100,6 @@ class TradingAgentsGraph:
             self.bull_memory,
             self.bear_memory,
             self.trader_memory,
-            self.invest_judge_memory,
             self.risk_manager_memory,
             self.general_manager_memory,
             self.conditional_logic,
@@ -118,11 +117,12 @@ class TradingAgentsGraph:
 
     def _initialize_llm(self, provider: str, model_name: str, backend_url: Optional[str]):
         provider = provider.lower()
+        shared_kwargs = {"extra_body": {"enable_thinking": False}}
         if provider in ("openai", "ollama", "openrouter"):
             base = backend_url or "https://api.openai.com/v1"
             if provider == "openrouter" and backend_url is None:
                 base = "https://openrouter.ai/api/v1"
-            return ChatOpenAI(model=model_name, base_url=base)
+            return ChatOpenAI(model=model_name, base_url=base, **shared_kwargs)
         if provider == "deepseek":
             base = backend_url or "https://api.deepseek.com/v1"
             api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -130,7 +130,12 @@ class TradingAgentsGraph:
                 raise ValueError(
                     "DEEPSEEK_API_KEY 未设置，无法初始化 DeepSeek LLM。请在 .env 中提供。"
                 )
-            return ChatOpenAI(model=model_name, base_url=base, api_key=SecretStr(api_key))
+            return ChatOpenAI(
+                model=model_name,
+                base_url=base,
+                api_key=SecretStr(api_key),
+                **shared_kwargs,
+            )
         if provider == "google":
             return ChatGoogleGenerativeAI(model=model_name)
         raise ValueError(f"Unsupported LLM provider: {provider}")
@@ -140,8 +145,8 @@ class TradingAgentsGraph:
         return {
             "market": ToolNode(
                 [
-                    get_crypto_market_data,
-                    get_support_resistance_levels,
+                    get_crypto_market_batch,
+                    get_support_resistance_batch,
                 ]
             ),
             "newsflash": ToolNode(
@@ -158,16 +163,35 @@ class TradingAgentsGraph:
             ),
         }
 
-    def propagate(self, asset_symbol, trade_date):
+    def propagate(
+        self,
+        asset_symbols,
+        trade_date: Optional[str] = None,
+        available_capital: Optional[float] = None,
+        min_leverage: Optional[float] = None,
+        max_leverage: Optional[float] = None,
+    ):
         """在指定加密货币/交易对和日期上运行整套图。"""
 
-        self.ticker = asset_symbol
+        self.ticker = asset_symbols
+
+        trade_date = trade_date or date.today().isoformat()
+        available_capital = 10000.0 if available_capital is None else available_capital
+        config_min_leverage = self.config.get("min_leverage", 1.0)
+        config_max_leverage = self.config.get("max_leverage", config_min_leverage)
+        min_leverage = config_min_leverage if min_leverage is None else min_leverage
+        max_leverage = config_max_leverage if max_leverage is None else max_leverage
+        if max_leverage is not None and min_leverage is not None and max_leverage < min_leverage:
+            min_leverage, max_leverage = max_leverage, min_leverage
 
         # 初始化图状态
         init_agent_state = cast(
             AgentState,
-            self.propagator.create_initial_state(asset_symbol, trade_date),
+            self.propagator.create_initial_state(asset_symbols, trade_date),
         )
+        init_agent_state["available_capital"] = available_capital
+        init_agent_state["min_leverage"] = float(min_leverage)
+        init_agent_state["max_leverage"] = float(max_leverage)
         args = self.propagator.get_graph_args()
 
         # 标准模式运行图
@@ -188,7 +212,7 @@ class TradingAgentsGraph:
             self.curr_state, returns_losses, self.bear_memory
         )
         self.reflector.reflect_trader(
-            self.curr_state, returns_losses, self.trader_memory, self.invest_judge_memory
+            self.curr_state, returns_losses, self.trader_memory
         )
         self.reflector.reflect_risk_manager(
             self.curr_state, returns_losses, self.risk_manager_memory

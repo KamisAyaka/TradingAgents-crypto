@@ -13,7 +13,7 @@
 ## 现有能力速览（基于当前仓库）
 
 - **多智能体链路已搭建**：市场/快讯/长文分析师、牛熊研究员、Trader、风险经理与总经理的节点和提示词在 `tradingagents/agents/*` 中已有实现，可消费 Binance 行情、Odaily 新闻以及 `FinancialSituationMemory`。
-- **单标的状态机稳定**：`TradingAgentsGraph.propagate` 以 `asset_of_interest` 为单位跑完整工作流，支持 LangGraph Dev 调试、记忆回写（`reflection.py`）。
+- **多资产状态支持**：`TradingAgentsGraph.propagate` 现在一次运行即可覆盖多枚代币（`assets_under_analysis`），并由各分析师顺序生成分资产报告；仍支持 LangGraph Dev 调试与记忆回写（`reflection.py`）。
 - **数据抓取与工具底层**：`tradingagents/dataflows/binance.py`、`odaily.py` 提供行情/新闻抓取、缓存与 ToolNode 封装。
 - **执行层仍是文本信号**：Trader/Manager 目前只输出“买/卖/观望”的文字，没有可被直接执行的工具标准，也没有多资产/资本管理接口。
 
@@ -21,7 +21,7 @@
 
 ## 对齐 PROMPT_MODEL（美股交易代理）的新增需求
 
-1. **多资产上下文**：PROMPT_MODEL 在一次调用里提供多个资产的 Raw Dashboard、Narrative、FOMO Map、Alpha 假设。我们需要把 `AgentState` 扩展为 `assets: dict[symbol -> AssetContext]`，让每个节点在单次推理中读写多个标的的研究结果与仓位数据。
+1. **多资产上下文**：PROMPT_MODEL 在一次调用里提供多个资产的 Raw Dashboard、Narrative、FOMO Map、Alpha 假设。基础版（串行多资产报告 + `assets_under_analysis`）已完成，下一步需要把 `AgentState` 扩展为 `assets: dict[symbol -> AssetContext]`，让每个节点在单次推理中读写多个标的的研究结果与仓位数据。
 2. **Hypothesis 驱动的讨论逻辑**：Bull/Bear/Trader/风险经理/总经理节点必须引用 `alpha_menu` 中的假设 ID、Edge Depth、Steel Man Risk，说明为何采纳/拒绝，确保与 PROMPT_MODEL 的“先选假设再决策”一致。
 3. **资本/仓位/价格工具化**：除了 `get_positions`，还要 `get_capital_snapshot()`、`get_asset_prices(symbols)` 等，保证 Trader/Manager 在做 sizing 时读取真实可用保证金、NAV、最新价，并把决策通过 `submit_trade_action` tool 执行。
 4. **事件与风险约束**：PROMPT_MODEL 强调 CPI/FOMC 等事件对仓位 sizing 的影响，需要在状态里记录 `event_schedule` 与 `risk_regime`，由风险团队据此调整 `risk_factor`、`confidence`、`leverage`。

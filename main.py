@@ -19,8 +19,8 @@ config["quick_llm_provider"] = "openai"
 config["deep_llm_provider"] = "openai"
 
 # 如果你想换别的尺寸，只需要改成对应的模型名即可
-config["quick_think_llm"] = "Qwen/Qwen3-32B"
-config["deep_think_llm"] = "deepseek-ai/DeepSeek-V3.2"
+config["quick_think_llm"] = "Qwen/Qwen2.5-14B-Instruct"
+config["deep_think_llm"] = "Qwen/Qwen3-14B"
 
 # 通过 ModelScope 的 OpenAI 兼容接口调用 Qwen
 config["backend_url"] = "https://api-inference.modelscope.cn/v1/"
@@ -37,21 +37,31 @@ ta = TradingAgentsGraph(
 )
 
 # 创建带默认状态的图实例，用于langgraph dev
-default_ticker = "BTCUSDT"
+# 默认跟踪两个资产，演示多代币输入
+default_tickers = ["BTCUSDT", "ETHUSDT"]
 default_date = date.today().isoformat()
+default_min_leverage = config.get("min_leverage", 1.0)
+default_max_leverage = config.get("max_leverage", 3.0)
 
 # Export the graph object for LangGraph Dev / API
 agent = ta.graph
 
 # 导出默认输入状态，方便langgraph dev使用
 default_input = {
-    "messages": [("human", default_ticker)],
-    "asset_of_interest": default_ticker,
+    "messages": [("human", f"多资产交易分析：{', '.join(default_tickers)}")],
+    "assets_under_analysis": default_tickers,
     "trade_date": default_date,
+    "available_capital": 10000.0,
+    "min_leverage": default_min_leverage,
+    "max_leverage": default_max_leverage,
 }
 
 if __name__ == "__main__":
     # forward propagate for a crypto pair when run as plain script
-    trade_date = date.today().isoformat()
-    _, decision = ta.propagate("BTCUSDT", trade_date)
+    _, decision = ta.propagate(
+        default_tickers,
+        available_capital=10000.0,
+        min_leverage=default_min_leverage,
+        max_leverage=default_max_leverage,
+    )
     print(decision)
