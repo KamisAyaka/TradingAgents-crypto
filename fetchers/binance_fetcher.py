@@ -24,6 +24,7 @@ from tradingagents.dataflows.binance import (
     BINANCE_DB_PATH,
     INDICATOR_COLUMNS,
     ensure_cache_db,
+    get_table_for_interval,
 )
 
 # 每次回填指标时最多只回溯最近 N 根，避免整库重算。
@@ -32,12 +33,6 @@ INDICATOR_RECALC_BUFFER = 50
 
 BINANCE_KLINES = os.getenv(
     "BINANCE_KLINES_URL", "https://api.binance.com/api/v3/klines"
-)
-BINANCE_KLINES_GLOBAL = os.getenv(
-    "BINANCE_KLINES_GLOBAL_URL", "https://data.binance.com/api/v3/klines"
-)
-BINANCE_KLINES_MIRROR = os.getenv(
-    "BINANCE_KLINES_MIRROR_URL", "https://data-api.binance.vision/api/v3/klines"
 )
 
 _MA_TYPE = getattr(talib, "MA_Type", None)
@@ -55,7 +50,12 @@ class BinanceAPIError(RuntimeError):
     """当 Binance 接口返回错误时抛出，方便上层统一处理。"""
 
 
-def _store_klines(symbol: str, interval: str, klines: List[Dict[str, Any]]) -> None:
+def _store_klines(
+    symbol: str,
+    interval: str,
+    klines: List[Dict[str, Any]],
+    table: str,
+) -> None:
     """把 K 线写入 SQLite，若主键冲突则更新最新行情。"""
     if not klines:
         return
@@ -84,8 +84,8 @@ def _store_klines(symbol: str, interval: str, klines: List[Dict[str, Any]]) -> N
 
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
         conn.executemany(
-            """
-            INSERT INTO klines (
+            f"""
+            INSERT INTO {table} (
                 symbol, interval, open_time, close_time, open, high,
                 low, close, volume, quote_volume, trade_count,
                 taker_buy_base, taker_buy_quote, updated_at
@@ -181,17 +181,19 @@ def _recompute_and_store_indicators(
     symbol: str,
     interval: str,
     recent_count: Optional[int] = None,
+    table: Optional[str] = None,
 ) -> None:
     """
     仅读取最近若干根 K 线重新计算指标并批量更新。
     recent_count 会根据本次抓取数量动态扩大窗口，避免全量重算。
     """
     ensure_cache_db()
+    table = table or get_table_for_interval(interval)
     limit = max(INDICATOR_RECALC_MIN_ROWS, (recent_count or 0) + INDICATOR_RECALC_BUFFER)
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            """
+            f"""
             SELECT
                 open_time,
                 close_time,
@@ -217,7 +219,7 @@ def _recompute_and_store_indicators(
                     trade_count,
                     taker_buy_base,
                     taker_buy_quote
-                FROM klines
+                FROM {table}
                 WHERE symbol = ? AND interval = ?
                 ORDER BY open_time DESC
                 LIMIT ?
@@ -270,7 +272,7 @@ def _recompute_and_store_indicators(
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
         conn.executemany(
             f"""
-            UPDATE klines
+            UPDATE {table}
             SET {set_clause}
             WHERE symbol = ? AND interval = ? AND open_time = ?
             """,
@@ -284,12 +286,9 @@ def _request_klines_api(
     interval: str = "1h",
     limit: int = 200,
 ) -> List[Dict[str, Any]]:
-    """调用 Binance REST 接口获取原始 K 线列表，带有主备域名轮询和错误容忍。"""
+    """调用 Binance REST 接口获取原始 K 线列表"""
     params = {"symbol": symbol.upper(), "interval": interval, "limit": limit}
     endpoints = [BINANCE_KLINES]
-    for alt in (BINANCE_KLINES_GLOBAL, BINANCE_KLINES_MIRROR):
-        if alt and alt not in endpoints:
-            endpoints.append(alt)
 
     last_error = None
     payload = None
@@ -345,10 +344,13 @@ def fetch_and_store_klines(
     针对单个交易对执行一次“抓取 -> 写库 -> 计算指标”的完整流程。
     返回最新抓取的 K 线，方便上层 runner 输出日志或调试。
     """
+    table = get_table_for_interval(interval)
     klines = _request_klines_api(symbol, interval=interval, limit=limit)
-    _store_klines(symbol, interval, klines)
+    _store_klines(symbol, interval, klines, table)
     # 指标需要依赖完整历史，因此写完 K 线后再统一回填指标列。
-    _recompute_and_store_indicators(symbol, interval, recent_count=len(klines))
+    _recompute_and_store_indicators(
+        symbol, interval, recent_count=len(klines), table=table
+    )
     return klines
 
 

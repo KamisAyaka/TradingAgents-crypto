@@ -28,10 +28,12 @@ dependencies = [
     "requests>=2.32.4",
     "rich>=14.0.0",
     "setuptools>=80.9.0",
+    "apscheduler>=3.10.4",
     "stockstats>=0.6.5",
     "TA-Lib>=0.4.29",
     "tqdm>=4.67.1",
     "tushare>=1.4.21",
     "typing-extensions>=4.14.0",
-    "yfinance>=0.2.63",
+    "binance-connector>=3.7.0",
+    "binance-sdk-derivatives-trading-usds-futures>=4.0.0",
 ]

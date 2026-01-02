@@ -23,6 +23,7 @@ from tradingagents.dataflows.odaily import DB_PATH, ensure_db
 ODAILY_NEWSFLASH_URL = "https://rss.odaily.news/rss/newsflash"
 ODAILY_ARTICLE_URL = "https://rss.odaily.news/rss/post"
 TAG_RE = re.compile(r"<[^>]+>")
+ENTRY_ID_DIGIT_RE = re.compile(r"(\d+)")
 
 
 def _serialize_value(value: Any) -> Any:
@@ -46,11 +47,26 @@ def _strip_html(value: str | None) -> str:
     return unescape(text).strip()
 
 
+def _normalize_entry_id(value: str | None) -> str:
+    """将 URL/guid 形式的 entry_id 归一化为纯数字，便于 Agent 使用。"""
+    if not value:
+        return ""
+    candidate = value.strip()
+    if candidate.isdigit():
+        return candidate
+    tail = candidate.rstrip("/").split("/")[-1]
+    if tail.isdigit():
+        return tail
+    match = ENTRY_ID_DIGIT_RE.search(candidate)
+    return match.group(1) if match else candidate
+
+
 def _entry_to_record(entry: Any) -> Dict[str, Any]:
     """把 RSS entry 转成数据库行字段，附带去重 ID、标签等信息。"""
     entry_id = getattr(entry, "id", None) or entry.get("id")
     fallback_id = entry.get("link") or entry.get("title")
     entry_id = entry_id or fallback_id
+    normalized_id = _normalize_entry_id(entry_id)
     published_iso = None
     published_parsed = entry.get("published_parsed")
     if published_parsed:
@@ -80,7 +96,7 @@ def _entry_to_record(entry: Any) -> Dict[str, Any]:
     guid = entry.get("guid") or entry.get("id") or entry.get("link") or ""
 
     return {
-        "entry_id": entry_id,
+        "entry_id": normalized_id or entry_id or guid,
         "title": entry.get("title", "").strip(),
         "summary": summary.strip(),
         "content": content.strip(),

@@ -100,10 +100,9 @@ def create_crypto_newsflash_analyst(llm):
 务必遵循以下流程：
 1. 先调用候选列表工具拉取最近 24h 的快讯标题与时间戳。
 2. 再根据标题挑选与 {asset_list} 直接相关或可能影响这些资产/宏观情绪的条目，调用内容工具时一次性传入逗号分隔的 entry_id 列表批量取回正文。
-3. 将所有快讯压缩为 3-6 个主题集群（监管、链上、宏观、资金流等），概述关键事实、触发背景与方向，不需要逐条列出所有事件。
-4. 对每个集群说明可能受影响的资产/板块以及净效应或潜在矛盾。
-5. 在整体结论中给出短期 (intraday-3d) 与后续观察期 (3-5d) 的叙事/价格路径、跨资产共振或分化信号，以及需要重点跟踪的指标。
-6. 最后仅输出单行 JSON，严格遵守字段定义，不得附加其他文字。
+3. 将所有快讯压缩为具体的主题集群（监管、链上、宏观、资金流等），概述关键事实、触发背景与方向，不需要逐条列出所有事件。
+4. 对每个集群说明可能受影响的资产以及净效应或潜在矛盾。
+5. 最后仅输出单行 JSON，严格遵守字段定义，不得附加其他文字。
 
 JSON 结构示例：
 {{{{
@@ -126,19 +125,6 @@ JSON 结构示例：
       "confidence": "high|medium|low"
     }}}}
   ],
-  "asset_impacts": [
-    {{{{
-      "asset": "ASSET1",
-      "net_direction": "bullish|bearish|neutral",
-      "drivers": ["引用主题或关键事件"],
-      "position_hint": "仓位/情绪提示或触发条件"
-    }}}}
-  ],
-  "impact_assessment": {{{{
-    "short_term": "当日-3天可能的情绪/价格路径",
-    "follow_through": "3-5天可能的延续/反转情形"
-  }}}},
-  "watchlist": ["需要继续跟进的事件/指标"]
 }}}}
 """.strip()
 
@@ -150,12 +136,6 @@ JSON 结构示例：
 
         graph = build_graph(system_message)
         conversation = list(state["messages"])
-        conversation.append(
-                    (
-                        "human",
-                        f"请集中分析与以下资产有关的快讯：{asset_list}，并输出多资产 JSON 报告。",
-                    )
-        )
 
         result_state = graph.invoke(
             {"messages": conversation}, config={"recursion_limit": 100}

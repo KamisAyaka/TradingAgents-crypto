@@ -27,6 +27,8 @@ setup(
         "rich>=13.0.0",
         "questionary>=2.0.1",
         "python-dotenv>=1.0.0",
+        "binance-connector>=3.7.0",
+        "binance-sdk-derivatives-trading-usds-futures>=4.0.0",
     ],
     python_requires=">=3.10",
     entry_points={

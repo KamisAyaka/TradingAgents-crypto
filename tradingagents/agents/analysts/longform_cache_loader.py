@@ -1,6 +1,7 @@
 from datetime import date
 
 from tradingagents.dataflows.odaily import get_latest_longform_analysis
+from tradingagents.agents.utils.binance_trade_tools import get_binance_positions
 from tradingagents.constants import DEFAULT_ASSETS
 
 def create_longform_cache_loader(max_age_days: int = 14):
@@ -12,6 +13,14 @@ def create_longform_cache_loader(max_age_days: int = 14):
         current_date = state.get("trade_date") or date.today().isoformat()
         assets = state.get("assets_under_analysis") or list(DEFAULT_ASSETS)
         asset_hint = ", ".join(assets)
+        positions_info = state.get("current_positions")
+        if not positions_info:
+            try:
+                positions_info = get_binance_positions.invoke(
+                    {"symbols": ",".join(assets)}
+                )
+            except Exception as exc:  # pragma: no cover - runtime env dependent
+                positions_info = f"获取当前持仓失败: {exc}"
 
         record = get_latest_longform_analysis(max_age_days=max_age_days)
         if record:
@@ -30,6 +39,7 @@ def create_longform_cache_loader(max_age_days: int = 14):
 
         return {
             "longform_report": content,
+            "current_positions": positions_info,
             "messages": state["messages"],
         }
 

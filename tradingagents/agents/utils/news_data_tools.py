@@ -1,4 +1,5 @@
 from langchain_core.tools import tool
+import re
 from typing import Annotated, List, Dict
 from tradingagents.dataflows.odaily import (
     get_newsflash_candidates,
@@ -29,11 +30,23 @@ def _parse_entry_ids(raw: str) -> List[str]:
     if not raw:
         return []
     normalized = raw.replace("\n", ",")
-    return [
-        token.strip()
-        for token in normalized.split(",")
-        if token.strip()
-    ]
+    parsed: List[str] = []
+    for token in normalized.split(","):
+        candidate = token.strip()
+        if not candidate:
+            continue
+        # Allow inputs such as "ID=123", URLs with trailing digits, etc.
+        if "=" in candidate:
+            candidate = candidate.split("=", 1)[1].strip()
+        last_segment = candidate.split("/")[-1].strip()
+        last_segment = last_segment.rstrip(")., ")
+        if last_segment.isdigit():
+            parsed.append(last_segment)
+            continue
+        match = re.search(r"(\d+)", last_segment)
+        if match:
+            parsed.append(match.group(1))
+    return parsed
 
 
 @tool

@@ -12,6 +12,12 @@ from tradingagents.agents.utils.news_data_tools import (
     get_crypto_newsflash_candidates,
     get_crypto_newsflash_content,
 )
+from tradingagents.agents.utils.binance_trade_tools import (
+    get_binance_positions,
+    set_binance_leverage,
+    open_binance_position_usdt,
+    close_binance_position,
+)
 
 
 def create_msg_delete():

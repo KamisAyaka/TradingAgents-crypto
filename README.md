@@ -20,16 +20,41 @@
 
   - `tradingagents/dataflows/binance.py`：Binance 行情抓取与本地缓存。
   - `tradingagents/dataflows/odaily.py`：Odaily RSS/快讯抓取，存入 SQLite。
+  - `tradingagents/agents/utils/binance_trade_tools.py`：交易执行与仓位查询工具（Agent 直接调用获取仓位，无需本地快照）。
   - 对应 LangGraph ToolNode 封装在 `tradingagents/agents/utils/*_tools.py`。
 
 - **记忆系统与复盘**
 
   - `FinancialSituationMemory`（Chroma 或内存向量库）存储“情景 → 建议”。
   - `tradingagents/graph/reflection.py` 在每次交易后对各角色表现做反思，并写回记忆。
+  - `TradingAgentsGraph.record_trade_reflection()` 可在平仓后调用，结合 `trade_info`（symbol/side/entry/exit/pnl 等）生成完整交易复盘，写入 `trade_memory`。
 
 - **可插拔 LLM**
   - 默认配置使用 Google Gemini + 阿里云 DashScope（长文+embedding）。
   - 示例入口 `main.py` 展示了如何切换到 ModelScope 的 OpenAI 兼容接口（Qwen / DeepSeek）。
+
+---
+
+## 整体流程与思路
+
+1. **数据准备 / 缓存层**
+   - 行情、快讯、长文由 `fetchers/binance_fetcher.py` 与 `fetchers/odaily_fetcher.py` 定时写入 `tradingagents/data/` 下的 SQLite，避免多 Agent 运行时重复联网。
+   - 仓位信息由 Agent 运行时通过 `get_binance_positions` 工具直接获取，不做轮询快照。
+
+2. **多智能体推理**
+   - 调度器 `trigger.py` 会按纽约时间把资产列表、资金、杠杆约束注入到 `TradingAgentsGraph`。流程顺序为：市场报告 → Odaily 快讯 → 长文研究 → 牛熊辩论 → 交易员执行计划 → 风控复核 → 总经理裁决。
+   - 每轮结束后，`SessionSummarizer` 会把“这一轮讨论的要点/分歧/待办”写入 `session_memory`，供下一轮复用。
+
+3. **日终总结**
+   - `trigger.py` 额外安排了每日 23:50（纽约时间）的日终任务：`generate_daily_session_summary()` 聚合当天所有 `session` 记录为一条 `session_daily` 记忆，并清理对应的轻量条目，保持记忆库精简。
+
+4. **交易复盘**
+   - 当仓位监听服务发现某个 `symbol` 的仓位从非零降到 0（意味着平仓），把入场/出场时间、价格、杠杆、PnL 等字段组合成 `trade_info` 调用 `TradingAgentsGraph.record_trade_reflection()`。
+   - `TradeCycleReflector` 会引用最近一次 `propagate()` 的 `state`（市场报告、牛熊观点、Trader/Risk/Manager 输出），生成结构化复盘，并写入 `trade_memory`。这样下一次遇到相似场景时，Trader/Risk/Manager 可以按 `memory_type="trade"` 搜索历史执行经验。
+
+5. **记忆与工具复用**
+   - Trader 和 Manager 在 prompt 中会按 `memory_type` 拉取对应记忆：`session/session_daily` 用于回顾讨论背景，`trade` 用于学习真实操作经验。
+   - 如果你要接入真实交易系统，只需实现两件事：① 开仓时把必要字段（symbol、杠杆、止盈止损等）写入仓位监听；② 平仓后调用 `record_trade_reflection(trade_info)`，让记忆系统自动更新。
 
 ---
 

@@ -1,10 +1,7 @@
 # TradingAgents/graph/propagation.py
 
 from typing import Dict, Any, Iterable, List, Sequence, Union
-from tradingagents.agents.utils.agent_states import (
-    InvestDebateState,
-    RiskReviewState,
-)
+from tradingagents.agents.utils.agent_states import InvestDebateState
 
 
 class Propagator:
@@ -29,22 +26,12 @@ class Propagator:
             "messages": [("human", f"多资产交易分析：{asset_desc}")],
             "assets_under_analysis": assets,
             "trade_date": str(trade_date),
-            "min_leverage": 1.0,
-            "max_leverage": 1.0,
+            "min_leverage": 1,
+            "max_leverage": 1,
             "investment_debate_state": InvestDebateState(
                 {
                     "history": "",
-                    "bull_history": "",
-                    "bear_history": "",
                     "current_response": "",
-                    "count": 0,
-                }
-            ),
-            "risk_review_state": RiskReviewState(
-                {
-                    "history": "",
-                    "analyst_report": "",
-                    "manager_summary": "",
                     "count": 0,
                 }
             ),
@@ -53,6 +40,7 @@ class Propagator:
             "longform_report": "",
             "trader_investment_plan": "",
             "final_trade_decision": "",
+            "current_positions": "",
             "interaction_round": 1,
         }
 

@@ -76,9 +76,8 @@ def create_crypto_market_analyst(llm):
 你是专注于加密市场的技术分析师，必须在一次推理中覆盖多个交易对。对于列表中的每个资产你都要：
 1. 使用批量工具 `get_crypto_market_batch` / `get_support_resistance_batch`，一次性传入完整资产列表（逗号分隔），获取 OHLCV、成交量、区间与关键价位。
 2. 提炼趋势与指标共识（均线/MACD/KDJ/布林带等），标出触发/失效条件。
-3. 给出 bull/base/bear 三种路径，以便 Trader/风险经理掌握触发器。
-4. 在 multi-asset 总结中对比不同资产的节奏（谁更强、谁更弱、相关性/共振风险）。
-5. 仅输出单行 JSON，不得附加其他文字。
+3. 给出 bull/base/bear 三种路径，以便 Trader 对是否执行交易做出相关的判断。
+4. 仅输出单行 JSON，不得附加其他文字。
 
 JSON 结构示例：
 {{
@@ -110,12 +109,6 @@ JSON 结构示例：
       "indicator_summary": "一句话指标共识"
     }}
   ],
-  "multi_asset_summary": {{
-    "lead_assets": ["强势资产"],
-    "lag_assets": ["弱势资产"],
-    "shared_risks": ["共振风险"],
-    "watchlist": ["跨资产需要监测的信号"]
-  }},
 }}
 """.strip()
 
@@ -127,12 +120,6 @@ JSON 结构示例：
 
         graph = build_graph(system_message)
         conversation = list(state["messages"])
-        conversation.append(
-            (
-                "human",
-                f"请使用统一框架依次分析以下资产：{asset_list}，并输出多资产 JSON 报告。",
-            )
-        )
 
         result_state = graph.invoke(
             {"messages": conversation}, config={"recursion_limit": 100}

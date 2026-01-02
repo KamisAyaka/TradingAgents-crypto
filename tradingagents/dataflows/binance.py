@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 
@@ -42,19 +40,66 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 # 定义币安数据库文件路径
 BINANCE_DB_PATH = DATA_DIR / "binance_cache.db"
 
+DEFAULT_KLINES_TABLE = "klines"
+FIFTEEN_MIN_TABLE = "klines_15m"
+FOUR_HOUR_TABLE = "klines_4h"
+INTERVAL_TABLE_MAP = {
+    "15m": FIFTEEN_MIN_TABLE,
+    "4h": FOUR_HOUR_TABLE,
+}
+ALL_KLINE_TABLES = {DEFAULT_KLINES_TABLE}
+ALL_KLINE_TABLES.update(INTERVAL_TABLE_MAP.values())
 
-def _ensure_indicator_columns(conn: sqlite3.Connection) -> None:
+
+def get_table_for_interval(interval: str) -> str:
+    """
+    根据周期选择对应的 SQLite 表。
+    默认使用 klines，仅 15m 使用独立表，便于与 1h 等数据隔离。
+    """
+    key = (interval or "").strip().lower()
+    return INTERVAL_TABLE_MAP.get(key, DEFAULT_KLINES_TABLE)
+
+
+def _ensure_indicator_columns(conn: sqlite3.Connection, table: str) -> None:
     """
     确保数据库表中包含所有技术指标列
     """
+    if table not in ALL_KLINE_TABLES:
+        raise ValueError(f"Unsupported klines table: {table}")
     # 获取表结构信息
-    cursor = conn.execute("PRAGMA table_info(klines)")
+    cursor = conn.execute(f"PRAGMA table_info({table})")
     # 提取现有的列名
     existing = {row[1] for row in cursor.fetchall()}
     # 遍历技术指标列规格，为缺失的列添加到表中
     for name, col_type in INDICATOR_COLUMN_SPECS.items():
         if name not in existing:
-            conn.execute(f"ALTER TABLE klines ADD COLUMN {name} {col_type}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+
+
+def _create_klines_table(conn: sqlite3.Connection, table: str) -> None:
+    """创建指定的 K 线表，并补充指标列。"""
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {table} (
+            symbol TEXT NOT NULL,
+            interval TEXT NOT NULL,
+            open_time INTEGER NOT NULL,
+            close_time INTEGER NOT NULL,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL,
+            quote_volume REAL,
+            trade_count INTEGER,
+            taker_buy_base REAL,
+            taker_buy_quote REAL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(symbol, interval, open_time)
+        )
+        """
+    )
+    _ensure_indicator_columns(conn, table)
 
 
 def ensure_cache_db() -> None:
@@ -63,45 +108,8 @@ def ensure_cache_db() -> None:
     """
     # 连接SQLite数据库
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
-        # 创建K线数据表（如果不存在）
-        # 表结构：
-        # - symbol: 交易对符号
-        # - interval: 时间间隔
-        # - open_time: 开盘时间戳
-        # - close_time: 收盘时间戳
-        # - open: 开盘价
-        # - high: 最高价
-        # - low: 最低价
-        # - close: 收盘价
-        # - volume: 成交量
-        # - quote_volume: 成交额
-        # - trade_count: 交易次数
-        # - taker_buy_base: 主动买入基币数量
-        # - taker_buy_quote: 主动买入计价币数量
-        # - updated_at: 更新时间
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS klines (
-                symbol TEXT NOT NULL,
-                interval TEXT NOT NULL,
-                open_time INTEGER NOT NULL,
-                close_time INTEGER NOT NULL,
-                open REAL NOT NULL,
-                high REAL NOT NULL,
-                low REAL NOT NULL,
-                close REAL NOT NULL,
-                volume REAL NOT NULL,
-                quote_volume REAL,
-                trade_count INTEGER,
-                taker_buy_base REAL,
-                taker_buy_quote REAL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY(symbol, interval, open_time)
-            )
-            """
-        )
-        # 确保技术指标列存在
-        _ensure_indicator_columns(conn)
+        for table in ALL_KLINE_TABLES:
+            _create_klines_table(conn, table)
         # 提交事务
         conn.commit()
 
@@ -146,6 +154,8 @@ def load_cached_klines(symbol: str, interval: str, limit: int) -> List[Dict[str,
     """
     # 确保数据库存在
     ensure_cache_db()
+    # 选择对应 interval 的表
+    table = get_table_for_interval(interval)
     # 连接数据库
     with sqlite3.connect(BINANCE_DB_PATH) as conn:
         # 设置行工厂，使查询结果可以通过列名访问
@@ -168,7 +178,7 @@ def load_cached_klines(symbol: str, interval: str, limit: int) -> List[Dict[str,
                 taker_buy_base,
                 taker_buy_quote,
                 {indicator_select}
-            FROM klines
+            FROM {table}
             WHERE symbol = ? AND interval = ?
             ORDER BY open_time DESC
             LIMIT ?

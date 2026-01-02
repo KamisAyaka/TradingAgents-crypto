@@ -18,22 +18,14 @@ class GraphSetup:
         quick_thinking_llm: Any,
         deep_thinking_llm: Any,
         tool_nodes: Dict[str, ToolNode],
-        bull_memory,
-        bear_memory,
-        trader_memory,
-        risk_manager_memory,
-        general_manager_memory,
+        trader_round_store,
         conditional_logic: ConditionalLogic,
     ):
         """注入所有依赖的 LLM、工具节点、记忆与条件逻辑。"""
         self.quick_thinking_llm: Any = quick_thinking_llm
         self.deep_thinking_llm: Any = deep_thinking_llm
         self.tool_nodes = tool_nodes
-        self.bull_memory = bull_memory
-        self.bear_memory = bear_memory
-        self.trader_memory = trader_memory
-        self.risk_manager_memory = risk_manager_memory
-        self.general_manager_memory = general_manager_memory
+        self.trader_round_store = trader_round_store
         self.conditional_logic = conditional_logic
 
     def setup_graph(
@@ -49,6 +41,8 @@ class GraphSetup:
         """
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
+        if "longform" not in selected_analysts:
+            selected_analysts = list(selected_analysts) + ["longform"]
 
         # 初始化分析师节点与工具
         analyst_nodes: Dict[str, Any] = {}
@@ -75,21 +69,13 @@ class GraphSetup:
 
         # 创建研究员与交易节点
         bull_researcher_node = create_bull_researcher(
-            self.quick_thinking_llm, self.bull_memory
+            self.quick_thinking_llm
         )
         bear_researcher_node = create_bear_researcher(
-            self.quick_thinking_llm, self.bear_memory
+            self.quick_thinking_llm
         )
         trader_node = create_trader(
-            self.quick_thinking_llm, self.trader_memory
-        )
-
-        # 创建风险讨论节点
-        risk_manager_node = create_risk_manager(
-            self.deep_thinking_llm, self.risk_manager_memory
-        )
-        manager_node = create_manager(
-            self.deep_thinking_llm, self.general_manager_memory
+            self.quick_thinking_llm, self.trader_round_store
         )
 
         # 创建状态图
@@ -104,17 +90,15 @@ class GraphSetup:
             if analyst_type in tool_nodes:
                 workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
 
-        # 添加研究员、交易员、风险团队与法官节点
+        # 添加研究员、交易员节点
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)
         workflow.add_node("Trader", trader_node)
-        workflow.add_node("Risk Manager", risk_manager_node)
-        workflow.add_node("Manager", manager_node)
 
         # 拆分并行/串行的分析师组合，用于 wiring
         parallel_analysts = [
             analyst
-            for analyst in ["market", "newsflash"]
+            for analyst in ["market", "newsflash", "longform"]
             if analyst in selected_analysts
         ]
         remaining_analysts = [
@@ -154,12 +138,20 @@ class GraphSetup:
                     return "wait"
                 if "newsflash" in parallel_analysts and not state["newsflash_report"]:
                     return "wait"
+                if "longform" in parallel_analysts and not state["longform_report"]:
+                    return "wait"
                 return "proceed"
 
             for analyst_type in parallel_analysts:
-                current_clear = _wire_tool_driven(analyst_type)
-                workflow.add_edge(START, f"{analyst_type.capitalize()} Analyst")
-                workflow.add_edge(current_clear, gate_node_name)
+                if analyst_type in ["market", "newsflash"]:
+                    current_clear = _wire_tool_driven(analyst_type)
+                    workflow.add_edge(START, f"{analyst_type.capitalize()} Analyst")
+                    workflow.add_edge(current_clear, gate_node_name)
+                elif analyst_type == "longform":
+                    cap_name = analyst_type.capitalize()
+                    workflow.add_edge(START, f"{cap_name} Analyst")
+                    workflow.add_edge(f"{cap_name} Analyst", f"Msg Clear {cap_name}")
+                    workflow.add_edge(f"Msg Clear {cap_name}", gate_node_name)
 
             workflow.add_conditional_edges(
                 gate_node_name,
@@ -193,7 +185,7 @@ class GraphSetup:
             else:
                 workflow.add_edge(current_node, next_node)
 
-        # 牛熊辩论与风险讨论的跳转逻辑
+        # 牛熊辩论的跳转逻辑
         workflow.add_conditional_edges(
             "Bull Researcher",
             self.conditional_logic.should_continue_debate,
@@ -210,9 +202,7 @@ class GraphSetup:
                 "Trader": "Trader",
             },
         )
-        workflow.add_edge("Trader", "Risk Manager")
-        workflow.add_edge("Risk Manager", "Manager")
-        workflow.add_edge("Manager", END)
+        workflow.add_edge("Trader", END)
 
         # Compile and return
         return workflow.compile()

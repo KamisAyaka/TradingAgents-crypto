@@ -31,6 +31,7 @@ class _SimpleMemoryCollection:
         self._documents = []
         self._metadatas = []
         self._embeddings = []
+        self._ids = []
 
     def count(self):
         return len(self._documents)
@@ -39,6 +40,7 @@ class _SimpleMemoryCollection:
         self._documents.extend(documents)
         self._metadatas.extend(metadatas)
         self._embeddings.extend(embeddings)
+        self._ids.extend(ids)
 
     def _cosine_distance(self, a, b):
         dot = sum(x * y for x, y in zip(a, b))
@@ -69,6 +71,67 @@ class _SimpleMemoryCollection:
             if "distances" in include:
                 result.setdefault("distances", [[]])[0].append(distance)
         return result
+
+    def get(self, ids=None, where=None, limit=None, include=None):
+        indices = list(range(len(self._documents)))
+        if ids:
+            target = set(ids)
+            indices = [idx for idx in indices if self._ids[idx] in target]
+        if where:
+            indices = [idx for idx in indices if self._match_where(self._metadatas[idx], where)]
+        if limit is not None:
+            indices = indices[:limit]
+
+        result = {
+            "ids": [self._ids[idx] for idx in indices],
+            "documents": [self._documents[idx] for idx in indices],
+            "metadatas": [self._metadatas[idx] for idx in indices],
+        }
+        if include and "embeddings" in include:
+            result["embeddings"] = [self._embeddings[idx] for idx in indices]
+        return result
+
+    def delete(self, ids=None, where=None):
+        if ids is None and where is None:
+            self._documents.clear()
+            self._metadatas.clear()
+            self._embeddings.clear()
+            self._ids.clear()
+            return
+
+        indices = list(range(len(self._documents)))
+        if ids:
+            target = set(ids)
+            indices = [idx for idx in indices if self._ids[idx] in target]
+        if where:
+            indices = [idx for idx in indices if self._match_where(self._metadatas[idx], where)]
+
+        for idx in sorted(indices, reverse=True):
+            del self._documents[idx]
+            del self._metadatas[idx]
+            del self._embeddings[idx]
+            del self._ids[idx]
+
+    def _match_where(self, metadata, where_clause):
+        if not where_clause:
+            return True
+        metadata = metadata or {}
+        for key, expected in where_clause.items():
+            actual = metadata.get(key)
+            if isinstance(expected, dict):
+                for op, value in expected.items():
+                    if op == "$gte" and not (actual is not None and actual >= value):
+                        return False
+                    if op == "$lt" and not (actual is not None and actual < value):
+                        return False
+                    if op == "$lte" and not (actual is not None and actual <= value):
+                        return False
+                    if op == "$gt" and not (actual is not None and actual > value):
+                        return False
+            else:
+                if actual != expected:
+                    return False
+        return True
 
 
 class FinancialSituationMemory:
@@ -180,7 +243,7 @@ class FinancialSituationMemory:
             vector = [val / norm for val in vector]
         return vector
 
-    def add_situations(self, situations_and_advice):
+    def add_situations(self, situations_and_advice, metadata_list=None):
         """新增情景与建议。参数为 [(situation, recommendation), ...] 列表。"""
 
         situations = []
@@ -196,12 +259,61 @@ class FinancialSituationMemory:
             ids.append(str(offset + i))
             embeddings.append(self.get_embedding(situation))
 
+        metadatas = []
+        for idx, rec in enumerate(advice):
+            base_meta = {"recommendation": rec}
+            if metadata_list and idx < len(metadata_list):
+                extra = metadata_list[idx] or {}
+                base_meta.update(extra)
+            metadatas.append(base_meta)
+
         self.situation_collection.add(
             documents=situations,
-            metadatas=[{"recommendation": rec} for rec in advice],
+            metadatas=metadatas,
             embeddings=embeddings,
             ids=ids,
         )
+
+    def get_entries(self, where=None, limit=None):
+        """按 metadata 过滤原始条目，返回 [{id, document, metadata}, ...]。"""
+        include = ["metadatas", "documents", "ids"]
+        raw = self.situation_collection.get(where=where, limit=limit, include=include)
+        ids = raw.get("ids") or raw.get("ids", [])
+        documents = raw.get("documents") or []
+        metadatas = raw.get("metadatas") or []
+
+        entries = []
+        # Chroma 返回 list 或 list of list
+        if documents and isinstance(documents[0], list):
+            doc_iter = documents[0]
+            meta_iter = metadatas[0] if metadatas else []
+            id_iter = raw.get("ids", [])[0] if ids and isinstance(ids[0], list) else ids
+        else:
+            doc_iter = documents
+            meta_iter = metadatas
+            id_iter = ids
+
+        count = min(len(doc_iter), len(meta_iter), len(id_iter))
+        for idx in range(count):
+            entries.append(
+                {
+                    "id": id_iter[idx],
+                    "document": doc_iter[idx],
+                    "metadata": meta_iter[idx],
+                }
+            )
+        return entries
+
+    def delete_entries(self, ids=None, where=None):
+        """根据 id 或 metadata 条件删除条目。"""
+        delete_kwargs = {}
+        if ids:
+            delete_kwargs["ids"] = ids
+        if where:
+            delete_kwargs["where"] = where
+        if not delete_kwargs:
+            return
+        self.situation_collection.delete(**delete_kwargs)
 
     def get_memories(self, current_situation, n_matches=1):
         """根据当前情景查找最相似的历史建议。"""

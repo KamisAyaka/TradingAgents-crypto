@@ -40,8 +40,8 @@ ta = TradingAgentsGraph(
 # 默认跟踪两个资产，演示多代币输入
 default_tickers = ["BTCUSDT", "ETHUSDT"]
 default_date = date.today().isoformat()
-default_min_leverage = config.get("min_leverage", 1.0)
-default_max_leverage = config.get("max_leverage", 3.0)
+default_min_leverage = int(config.get("min_leverage", 1))
+default_max_leverage = int(config.get("max_leverage", 3))
 
 # Export the graph object for LangGraph Dev / API
 agent = ta.graph
