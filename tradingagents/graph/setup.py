@@ -75,7 +75,7 @@ class GraphSetup:
             self.quick_thinking_llm
         )
         trader_node = create_trader(
-            self.quick_thinking_llm, self.trader_round_store
+            self.deep_thinking_llm, self.trader_round_store
         )
 
         # 创建状态图

@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trading_backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persist databases and logs
+      - ./data:/app/data
+      - ./logs:/app/logs
+      # Mount results if needed
+      - ./results:/app/results
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: trading_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend

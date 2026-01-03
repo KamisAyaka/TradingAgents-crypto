@@ -6,7 +6,6 @@ import { Badge } from '../components/ui/Badge';
 
 function TracePage({
   traceEvents,
-  thread,
   history,
   selectedTraceId,
   onSelectTrace,
@@ -56,8 +55,8 @@ function TracePage({
                   <div key={`${event.title}-${index}`} className="relative pl-8">
                     {/* Timeline Dot */}
                     <div className={`absolute left-0 top-1.5 w-3 h-3 rounded-full border-2 transform -translate-x-[5px] z-10 bg-background ${isCompleted ? 'border-success bg-success/20' :
-                        isAdjusted ? 'border-accent bg-accent/20' :
-                          'border-slate-500 bg-slate-500/20'
+                      isAdjusted ? 'border-accent bg-accent/20' :
+                        'border-slate-500 bg-slate-500/20'
                       }`} />
 
                     <div className="flex flex-col gap-2">
@@ -101,40 +100,7 @@ function TracePage({
             </div>
           </Card>
 
-          {/* Agent Thread */}
-          <Card className="p-6">
-            <div className="flex items-center gap-2 mb-6 pb-4 border-b border-slate-700/50">
-              <MessageSquare className="text-accent" size={20} />
-              <h2 className="text-lg font-bold font-heading text-slate-100">Agent 线程交互</h2>
-            </div>
 
-            <div className="space-y-4">
-              {thread.length ? (
-                thread.map((item, index) => (
-                  <div key={`${item.name}-${index}`} className="flex gap-4 p-4 rounded-lg bg-slate-800/30 border border-slate-700/30 hover:border-slate-600/50 transition-colors">
-                    <div className="flex-shrink-0 flex flex-col items-center gap-2 min-w-[80px]">
-                      <Badge variant="warning" className="w-full justify-center">{item.role}</Badge>
-                      <img
-                        src={`https://api.dicebear.com/7.x/bottts/svg?seed=${item.name}`}
-                        alt={item.name}
-                        className="w-10 h-10 rounded-full bg-slate-700"
-                      />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-bold text-slate-200 mb-1">{item.name}</div>
-                      <div className="text-sm text-slate-400 leading-relaxed font-mono">
-                        <CollapsibleText text={String(item.content || '')} limit={360} />
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="text-center py-12 text-slate-500">
-                  <p>暂无对话记录</p>
-                </div>
-              )}
-            </div>
-          </Card>
         </div>
       </div>
     </div>

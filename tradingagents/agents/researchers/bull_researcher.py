@@ -60,8 +60,7 @@ JSON 结构：
       "rebuttals": [
         {{
           "bear_point": "引用看跌论点",
-          "bull_response": "你的反驳",
-          "reference_source": "引用的报告/数据"
+          "bull_response": "你的反驳"
         }}
       ]
     }}

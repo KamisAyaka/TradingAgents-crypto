@@ -19,7 +19,7 @@ function CollapsibleText({ text, limit = 360 }) {
     shouldTruncate && !expanded ? `${prettyText.slice(0, limit)}...` : prettyText
   return (
     <div className="collapsible">
-      <pre>{displayText}</pre>
+      <pre className="whitespace-pre-wrap break-words p-2 bg-slate-950/30 rounded text-xs font-mono border border-slate-800/50">{displayText}</pre>
       {shouldTruncate ? (
         <button
           className="link-button"

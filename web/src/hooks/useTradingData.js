@@ -265,7 +265,11 @@ function useTradingData() {
     () => ({
       entry: toNumber(latestExecution.entry_price),
       stop: toNumber(latestRisk.stop_loss_price),
-      targets: (latestRisk.take_profit_targets || [])
+      targets: (Array.isArray(latestRisk.take_profit_targets)
+        ? latestRisk.take_profit_targets
+        : latestRisk.take_profit_targets
+          ? [latestRisk.take_profit_targets]
+          : [])
         .map((value) => toNumber(value))
         .filter((value) => value !== null),
       last: candles.length ? candles[candles.length - 1].c : null,
@@ -308,7 +312,6 @@ function useTradingData() {
     setSelectedTraceId,
     status,
     symbol,
-    thread,
     toolCalls,
     traceEvents,
     traceHistory,

@@ -80,7 +80,7 @@ uv sync
 
 ### 配置 LLM 与环境变量
 
-框架默认配置在 `tradingagents/default_config.py` 中，你可以：
+框架默认配置在 `tradingagents/default_config.py` 中，支持通过环境变量覆盖（下方以你给出的 Qwen + DeepSeek 组合为例）：
 
 - 使用默认的 Google Gemini + DashScope：
   - 设置 `GOOGLE_API_KEY`（用于 `llm_provider="google"`）。
@@ -89,6 +89,26 @@ uv sync
   - `config["llm_provider"] = "openai"` 等。
   - `config["backend_url"] = "https://api-inference.modelscope.cn/v1/"`。
   - 将 `OPENAI_API_KEY` 设置为 ModelScope 的 API Key。
+
+推荐：通过环境变量配置“快模型=ModelScope Qwen / 深模型=DeepSeek（优先 ModelScope 免费接口，失败再切换官方）”。
+
+```bash
+# 快模型：ModelScope Qwen3-8B（OpenAI 兼容接口）
+export TRADINGAGENTS_QUICK_LLM_PROVIDER="openai"
+export TRADINGAGENTS_QUICK_THINK_LLM="Qwen/Qwen3-8B"
+export TRADINGAGENTS_QUICK_BACKEND_URL="https://api-inference.modelscope.cn/v1/"
+export OPENAI_API_KEY="<你的 ModelScope API Key>"
+
+# 深模型：DeepSeek（优先走 ModelScope 免费接口）
+export TRADINGAGENTS_DEEP_LLM_PROVIDER="deepseek"
+export TRADINGAGENTS_DEEP_THINK_LLM="deepseek-ai/DeepSeek-V3.2"
+export TRADINGAGENTS_DEEP_BACKEND_URL="https://api-inference.modelscope.cn/v1/"
+export TRADINGAGENTS_DEEP_FALLBACK_BACKEND_URL="https://api.deepseek.com/v1"
+export DEEPSEEK_API_KEY="<你的 DeepSeek 官方 Key>"
+
+# 若你想额外设置 fallback Key（可选）：
+# export DEEPSEEK_FALLBACK_API_KEY="<你的 DeepSeek 官方 Key>"
+```
 
 记忆模块 `FinancialSituationMemory` 依赖 DashScope embedding，缺少 `DASHSCOPE_API_KEY` 会直接报错。
 

@@ -35,7 +35,6 @@ function App() {
     setSelectedTraceId,
     status,
     symbol,
-    thread,
     toolCalls,
     traceEvents,
     traceHistory,
@@ -89,7 +88,6 @@ function App() {
             element={
               <TracePage
                 traceEvents={traceEvents}
-                thread={thread}
                 history={traceHistory}
                 selectedTraceId={selectedTraceId}
                 onSelectTrace={setSelectedTraceId}

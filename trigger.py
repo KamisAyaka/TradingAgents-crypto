@@ -8,9 +8,9 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
 from pydantic import SecretStr
-from langchain_community.chat_models.tongyi import ChatTongyi
+from langchain_openai import ChatOpenAI
 
-from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.graph.trading_graph import TradingAgentsGraph, _FallbackChatModel
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.analysts.crypto_longform_analyst import (
     create_crypto_longform_analyst,
@@ -38,7 +38,7 @@ config = DEFAULT_CONFIG.copy()
 
 # 交易参数
 DEFAULT_TICKERS = ["BTCUSDT", "ETHUSDT"]
-DEFAULT_CAPITAL = 10000.0
+DEFAULT_CAPITAL = 100.0
 DEFAULT_MIN_LEVERAGE = int(config.get("min_leverage", 1))
 DEFAULT_MAX_LEVERAGE = int(config.get("max_leverage", 3))
 
@@ -106,22 +106,34 @@ def _initialize_longform_node():
     if _longform_node is not None:
         return _longform_node
 
-    provider = os.getenv(
-        "LONGFORM_LLM_PROVIDER",
-        config.get("longform_llm_provider", "dashscope"),
-    ).lower()
-    if provider != "dashscope":
-        raise ValueError("长文分析仅支持 DashScope/Qwen，请设置 LONGFORM_LLM_PROVIDER=dashscope")
-
     model = os.getenv(
-        "LONGFORM_LLM_MODEL",
-        config.get("longform_llm_model", "qwen-plus"),
+        "TRADINGAGENTS_DEEP_THINK_LLM",
+        config.get("deep_think_llm", "deepseek-ai/DeepSeek-V3.2"),
     )
-    api_key = os.getenv("DASHSCOPE_API_KEY")
-    if not api_key:
-        raise ValueError("DASHSCOPE_API_KEY 未设置，无法运行长文分析师。")
+    base = config.get("deep_backend_url") or "https://api.deepseek.com/v1"
+    fallback_base = config.get("deep_fallback_backend_url")
 
-    llm = ChatTongyi(model=model, api_key=SecretStr(api_key))
+    primary_key = os.getenv("OPENAI_API_KEY")
+    if not primary_key:
+        raise ValueError("OPENAI_API_KEY 未设置，无法运行长文分析师。")
+    fallback_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_FALLBACK_API_KEY")
+    if not fallback_key:
+        fallback_key = primary_key
+
+    extra_body = {"enable_thinking": False}
+    primary = ChatOpenAI(
+        model=model,
+        base_url=base,
+        api_key=SecretStr(primary_key),
+        extra_body=extra_body,
+    )
+    fallback = ChatOpenAI(
+        model=model,
+        base_url=fallback_base or base,
+        api_key=SecretStr(fallback_key),
+        extra_body=extra_body,
+    )
+    llm = _FallbackChatModel(primary, fallback, fallback_base)
     _longform_node = create_crypto_longform_analyst(llm)
     return _longform_node
 
@@ -192,6 +204,35 @@ def run_longform_analysis(assets: list[str] = None):
     if not assets:
         logger.error("LONGFORM_ASSETS 未配置，跳过长文分析。")
         return
+
+    # Check for existing analysis within the last 24 hours to avoid redundant runs
+    from tradingagents.dataflows.odaily import get_latest_longform_analysis
+    
+    # Check globally or per-asset if we were iterating. Currently we run one batch analysis.
+    # The graph saves it with asset="__GLOBAL_LONGFORM__" or specific asset if customized.
+    # The longform node currently saves with the trade date.
+    # Let's check the latest entry regardless of asset for now, or use the global key.
+    # The current implementation in crypto_longform_analyst.py doesn't pass a specific asset to save_longform_analysis,
+    # so it defaults to __GLOBAL_LONGFORM__ via save_longform_analysis default or caller.
+    # Inspecting crypto_longform_analyst.py again implies it calls: save_longform_analysis(report, analysis_date=current_date)
+    # This means asset defaults to None -> __GLOBAL_LONGFORM__.
+    
+    latest = get_latest_longform_analysis()
+    if latest:
+        created_at_iso = latest.get("created_at")
+        if created_at_iso:
+            try:
+                created_at = datetime.fromisoformat(created_at_iso)
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                
+                # Check if less than 24 hours (86400 seconds)
+                elapsed = (datetime.now(timezone.utc) - created_at).total_seconds()
+                if elapsed < 86400:
+                    logger.info(f"长文分析跳过: 现有报告生成于 {elapsed/3600:.1f} 小时前 (小于 24h)")
+                    return
+            except Exception as e:
+                logger.warning(f"无法解析长文分析时间戳: {e}")
 
     try:
         node = _initialize_longform_node()
@@ -406,12 +447,10 @@ def execute_startup_tasks():
     run_odaily_newsflash_fetcher()
     run_odaily_article_fetcher()
     run_longform_analysis()
-    run_analysis()
-    # 启动时不直接跑 monitor，因为 run_analysis 已经跑过了，
-    # 且 monitor 依赖时间差，刚跑完肯定不会触发超时。
-    # 至于价格预警，刚开仓也不太可能立刻触发。
-    # 不过为了保险起见，或者为了更新 alert state，可以跑一次。
-    # run_market_monitor() 
+    # 替换直接的 run_analysis() 为 run_market_monitor()
+    # 这样启动时会先检查上次运行时间，避免重启服务导致立即重复交易，
+    # 同时也解决了“首次运行”时 monitor 会自动触发 analysis 的问题，避免双重触发。
+    run_market_monitor() 
 
 
 

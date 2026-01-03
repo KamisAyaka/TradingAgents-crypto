@@ -175,6 +175,16 @@ class BinanceFuturesService:
 
         closing_side = "SELL" if position_amt > 0 else "BUY"
         working_type = working_type.upper() if working_type else "MARK_PRICE"
+        
+        # Determine strict position side for algo order
+        is_hedge = self._is_hedge_mode()
+        # In Hedge Mode:
+        # If we have a LONG position (amt > 0), we close it by SELLing with positionSide="LONG"
+        # If we have a SHORT position (amt < 0), we close it by BUYing with positionSide="SHORT"
+        
+        pos_side_arg = "BOTH"
+        if is_hedge:
+            pos_side_arg = "LONG" if position_amt > 0 else "SHORT"
 
         if replace_existing:
             try:
@@ -190,6 +200,7 @@ class BinanceFuturesService:
                 order_type="STOP_MARKET",
                 trigger_price=stop_loss_price,
                 working_type=working_type,
+                position_side=pos_side_arg,
             )
         if take_profit_price is not None and take_profit_price > 0:
             results["take_profit"] = self._submit_algo_exit_order(
@@ -198,6 +209,7 @@ class BinanceFuturesService:
                 order_type="TAKE_PROFIT_MARKET",
                 trigger_price=take_profit_price,
                 working_type=working_type,
+                position_side=pos_side_arg,
             )
         if not results:
             raise BinanceFuturesError("止盈/止损价格无效，未能创建任何订单。")
@@ -351,6 +363,7 @@ class BinanceFuturesService:
         order_type: str,
         trigger_price: float | str,
         working_type: str,
+        position_side: str = "BOTH",
     ) -> Dict[str, Any]:
         return self._call_rest(
             self._rest.new_algo_order,
@@ -361,6 +374,7 @@ class BinanceFuturesService:
             trigger_price=float(self._normalize_price(trigger_price)),
             working_type=working_type.upper(),
             close_position="true",
+            position_side=position_side,
             recv_window=self.settings.recv_window,
         )
 
@@ -391,12 +405,16 @@ class BinanceFuturesService:
     def _is_hedge_mode(self) -> bool:
         if self._hedge_mode is not None:
             return self._hedge_mode
-        data = self._call_rest(
-            self._rest.get_current_position_mode, recv_window=self.settings.recv_window
-        )
-        flag = data.get("dualSidePosition")
-        self._hedge_mode = bool(flag)
-        return self._hedge_mode
+        try:
+            data = self._call_rest(
+                self._rest.get_current_position_mode, recv_window=self.settings.recv_window
+            )
+            flag = data.get("dualSidePosition")
+            self._hedge_mode = bool(flag)
+            return self._hedge_mode
+        except Exception:
+            # Fallback to False if query fails
+            return False
 
     def _resolve_position_side(
         self, side: str, reduce_only: bool, explicit: Optional[str]
@@ -405,9 +423,12 @@ class BinanceFuturesService:
             return explicit
         if not self._is_hedge_mode():
             return "BOTH"
-        if reduce_only:
-            # Caller should supply the actual leg; fall back to BOTH to let Binance decide.
-            return "BOTH"
+        # In Hedge Mode:
+        # If opening (not reduce_only), 'BUY' -> 'LONG', 'SELL' -> 'SHORT'
+        # If closing (reduce_only or close_position), we need to know which side we are closing.
+        # However, for market_order with reduce_only=True, if we don't know, we might fail.
+        # Standard logic: BUY -> LONG, SELL -> SHORT is valid for opening.
+        # For closing, usually we pass explicit position_side from higher level logic.
         return "LONG" if side.upper() == "BUY" else "SHORT"
 
     def _call_rest(self, func: Any, **kwargs: Any) -> Any:
