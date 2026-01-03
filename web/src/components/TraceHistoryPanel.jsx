@@ -46,6 +46,7 @@ function TraceHistoryPanel({
           records.map((record) => {
             // Enhanced Logic for Multi-Asset Display
             const trace = record.trace || {}
+            const plan = trace.plan || {}
             const finalDecisionObj = trace.final_trade_decision || {}
 
             // 1. Determine Assets Display
