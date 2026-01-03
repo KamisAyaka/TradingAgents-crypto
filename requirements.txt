@@ -21,3 +21,4 @@ binance-sdk-derivatives-trading-usds-futures
 apscheduler
 fastapi
 uvicorn
+scipy
