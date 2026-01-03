@@ -65,11 +65,6 @@ class _FallbackChatModel(BaseChatModel):
             logger.warning(self._format_error(exc))
             return self._fallback._generate(messages, stop=stop, **kwargs)
 
-    def bind_tools(self, tools, **kwargs):
-        primary_bound = self._primary.bind_tools(tools, **kwargs)
-        fallback_bound = self._fallback.bind_tools(tools, **kwargs)
-        return primary_bound.with_fallbacks([fallback_bound])
-
     async def _agenerate(self, messages, stop=None, **kwargs):
         try:
             return await self._primary._agenerate(messages, stop=stop, **kwargs)
@@ -77,6 +72,16 @@ class _FallbackChatModel(BaseChatModel):
             logger = logging.getLogger(__name__)
             logger.warning(self._format_error(exc))
             return await self._fallback._agenerate(messages, stop=stop, **kwargs)
+
+    def bind_tools(self, tools, **kwargs):
+        import openai
+        primary_bound = self._primary.bind_tools(tools, **kwargs)
+        fallback_bound = self._fallback.bind_tools(tools, **kwargs)
+        # Explicitly handle RateLimitError to trigger fallback
+        return primary_bound.with_fallbacks(
+            [fallback_bound], 
+            exceptions_to_handle=(openai.RateLimitError, Exception)
+        )
 
     @property
     def _llm_type(self) -> str:
@@ -194,9 +199,16 @@ class TradingAgentsGraph:
             api_key=SecretStr(primary_key),
             extra_body=extra_body,
         )
+        # 如果使用官方 URL 作为 fallback，强制使用标准的 deepseek-chat 模型名
+        # 因为 ModelScope 的模型名（如 deepseek-ai/DeepSeek-V3.2）在官方 API 会报 400
+        fallback_url = fallback_base or "https://api.deepseek.com/v1"
+        fallback_model = model_name
+        if "api.deepseek.com" in fallback_url and "/" in model_name:
+            fallback_model = "deepseek-chat"
+
         fallback = ChatOpenAI(
-            model=model_name,
-            base_url=fallback_base or base,
+            model=fallback_model,
+            base_url=fallback_url,
             api_key=SecretStr(fallback_key),
             extra_body=extra_body,
         )

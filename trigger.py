@@ -77,6 +77,19 @@ def run_analysis():
     """执行一次交易分析"""
     logger.info(f"========== 开始分析 ==========")
 
+# 全局锁，防止分析任务并发执行
+_is_analysis_running = False
+
+def run_analysis():
+    """执行 AI 交易分析逻辑"""
+    global _is_analysis_running
+    if _is_analysis_running:
+        logger.info("上一次分析任务仍在进行中，本次跳过。")
+        return
+
+    logger.info("========== 开始分析 ==========")
+    _is_analysis_running = True
+    
     try:
         # 支持从环境变量读取动态配置 (由 Server 注入)
         assets_env = os.getenv("ANALYSIS_ASSETS")
@@ -96,6 +109,9 @@ def run_analysis():
         logger.info(f"分析完成，决策: {decision[:500]}..." if len(decision) > 500 else f"分析完成，决策: {decision}")
     except Exception as e:
         logger.error(f"分析过程出错: {e}", exc_info=True)
+    finally:
+        # 无论成功失败，一定要释放锁
+        _is_analysis_running = False
     
     logger.info("========== 分析结束 ==========\n")
 
@@ -435,6 +451,7 @@ def configure_scheduler(scheduler):
         id="market_monitor_job",
         name="市场监控 (价格/超时)",
         replace_existing=True,
+        max_instances=3,
     )
     
     # REMOVED: analysis_job (5 min interval)

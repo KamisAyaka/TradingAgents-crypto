@@ -324,6 +324,7 @@ function useTradingData() {
     selectedRiskLogs: riskLogs,
     selectedToolCalls: toolCalls,
     selectedTraceId,
+    selectedTrace,
   }
 }
 

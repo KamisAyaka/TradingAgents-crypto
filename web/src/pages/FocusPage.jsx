@@ -16,7 +16,55 @@ function FocusPage({
   historyPageSize,
   historyTotal,
   onPageChange,
+  trace, // New prop
 }) {
+
+  // Enhanced Logic for Multi-Asset Display
+  const finalDecisionObj = trace?.final_trade_decision || {}
+
+  // 1. Determine Assets Display
+  let displayAsset = 'Wait'
+  const assetList = trace?.assets || []
+  if (assetList.length > 0) {
+    // Show "BTC, ETH" instead of "BTCUSDT" to save space
+    displayAsset = assetList.map(a => a.replace('USDT', '')).join(', ')
+  } else if (plan.asset) {
+    displayAsset = plan.asset.replace('USDT', '')
+  }
+
+  // 2. Determine Aggregated Decision
+  let aggregatedDecision = (plan.decision || 'WAIT').toUpperCase()
+  const perAssetDecisions = finalDecisionObj.trader_plan?.per_asset_decisions || []
+  let decisionReason = plan.thesis || '暂无交易观点'
+
+  if (perAssetDecisions.length > 0) {
+    const actions = new Set()
+    const reasons = []
+    perAssetDecisions.forEach(d => {
+      const dVal = (d.decision || 'WAIT').toUpperCase()
+      actions.add(dVal)
+      if (d.thesis) reasons.push(`${d.asset}: ${d.thesis}`)
+    })
+
+    // Prioritize active actions over WAIT
+    if (actions.has('LONG') && actions.has('SHORT')) aggregatedDecision = 'MIXED'
+    else if (actions.has('LONG')) aggregatedDecision = 'LONG'
+    else if (actions.has('SHORT')) aggregatedDecision = 'SHORT'
+    else if (actions.size === 1) aggregatedDecision = Array.from(actions)[0]
+    else {
+      // Filter out WAIT
+      const activeActions = Array.from(actions).filter(a => a !== 'WAIT')
+      if (activeActions.length === 1) aggregatedDecision = activeActions[0]
+      else if (activeActions.length > 1) aggregatedDecision = 'MIXED'
+      else aggregatedDecision = 'WAIT'
+    }
+
+    // Improve thesis display if multi-asset
+    if (reasons.length > 0 && assetList.length > 1) {
+      decisionReason = reasons[0] // Just show first one for now or maybe keep generic
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background pt-20 pb-8 px-4 sm:px-6 lg:px-8">
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -44,12 +92,13 @@ function FocusPage({
               <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-wider">
                 <Target size={14} /> Signal
               </div>
-              <div className={`text-2xl font-bold font-heading ${plan.decision === 'LONG' ? 'text-success' :
-                plan.decision === 'SHORT' ? 'text-danger' : 'text-slate-200'
+              <div className={`text-2xl font-bold font-heading ${aggregatedDecision === 'LONG' ? 'text-success' :
+                aggregatedDecision === 'SHORT' ? 'text-danger' :
+                  aggregatedDecision === 'MIXED' ? 'text-accent' : 'text-slate-200'
                 }`}>
-                {plan.asset ? `${plan.decision || 'WAIT'} ${plan.asset}` : 'WAIT'}
+                {aggregatedDecision} <span className="text-sm text-slate-500 ml-1">{displayAsset}</span>
               </div>
-              <div className="text-xs text-slate-500 truncate">{plan.thesis || '暂无交易观点'}</div>
+              <div className="text-xs text-slate-500 truncate" title={decisionReason}>{decisionReason}</div>
               <div className={`absolute top-0 right-0 w-16 h-16 bg-gradient-to-br from-transparent to-white/5 rounded-bl-full pointer-events-none transition-opacity opacity-0 group-hover:opacity-100`} />
             </Card>
 

@@ -47,6 +47,7 @@ function App() {
     selectedRiskLogs,
     selectedToolCalls,
     selectedTraceId,
+    selectedTrace,
   } = useTradingData()
 
   return (
@@ -114,6 +115,7 @@ function App() {
                 historyPageSize={tracePageSize}
                 historyTotal={traceTotal}
                 onPageChange={setTracePage}
+                trace={selectedTrace}
               />
             }
           />

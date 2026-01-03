@@ -44,9 +44,48 @@ function TraceHistoryPanel({
       <div className="flex-1 overflow-y-auto custom-scrollbar space-y-2 pr-1">
         {records.length ? (
           records.map((record) => {
-            const plan = record.trace?.plan || {}
-            const decision = (plan.decision || 'WAIT').toUpperCase()
-            const asset = plan.asset || '--'
+            // Enhanced Logic for Multi-Asset Display
+            const trace = record.trace || {}
+            const finalDecisionObj = trace.final_trade_decision || {}
+
+            // 1. Determine Assets Display
+            let displayAsset = '--'
+            const assetList = trace.assets || []
+            if (assetList.length > 0) {
+              // Show "BTC, ETH" instead of "BTCUSDT" to save space
+              displayAsset = assetList.map(a => a.replace('USDT', '')).join(', ')
+            } else if (plan.asset) {
+              displayAsset = plan.asset.replace('USDT', '')
+            }
+
+            // 2. Determine Aggregated Decision
+            // Check all assets in the final plan
+            let aggregatedDecision = (plan.decision || 'WAIT').toUpperCase()
+            const perAssetDecisions = finalDecisionObj.trader_plan?.per_asset_decisions || []
+
+            if (perAssetDecisions.length > 0) {
+              const actions = new Set()
+              perAssetDecisions.forEach(d => {
+                const dVal = (d.decision || 'WAIT').toUpperCase()
+                actions.add(dVal)
+              })
+
+              // Prioritize active actions over WAIT
+              if (actions.has('LONG') && actions.has('SHORT')) aggregatedDecision = 'MIXED'
+              else if (actions.has('LONG')) aggregatedDecision = 'LONG'
+              else if (actions.has('SHORT')) aggregatedDecision = 'SHORT'
+              else if (actions.size === 1) aggregatedDecision = Array.from(actions)[0]
+              // If it's a mix of WAIT and something else (but not both long/short), show the active one
+              else {
+                // Filter out WAIT
+                const activeActions = Array.from(actions).filter(a => a !== 'WAIT')
+                if (activeActions.length === 1) aggregatedDecision = activeActions[0]
+                else if (activeActions.length > 1) aggregatedDecision = 'MIXED'
+                else aggregatedDecision = 'WAIT'
+              }
+            }
+
+            const decision = aggregatedDecision
             const isSelected = record.id === selectedId
 
             // Color coding for decision
@@ -59,6 +98,7 @@ function TraceHistoryPanel({
 
             if (decision === 'LONG') decisionColor = 'text-success'
             else if (decision === 'SHORT') decisionColor = 'text-danger'
+            else if (decision === 'MIXED') decisionColor = 'text-accent'
             else if (decision.includes('CLOSE')) decisionColor = 'text-accent'
 
             return (
@@ -85,8 +125,8 @@ function TraceHistoryPanel({
                   <span className={`text-sm font-bold font-heading ${decisionColor}`}>
                     {decision}
                   </span>
-                  <span className="text-xs font-mono text-slate-300 bg-slate-800/50 px-1.5 py-0.5 rounded">
-                    {asset}
+                  <span className="text-xs font-mono text-slate-300 bg-slate-800/50 px-1.5 py-0.5 rounded truncate max-w-[120px]" title={displayAsset}>
+                    {displayAsset}
                   </span>
                 </div>
 
