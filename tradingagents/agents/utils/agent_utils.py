@@ -6,7 +6,6 @@ from tradingagents.agents.utils.crypto_market_tools import (
     get_support_resistance_batch,
 )
 from tradingagents.agents.utils.news_data_tools import (
-    get_crypto_longform_articles,
     get_crypto_longform_candidates,
     get_crypto_article_content,
     get_crypto_newsflash_candidates,

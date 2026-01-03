@@ -5,28 +5,12 @@ from tradingagents.dataflows.odaily import (
     get_newsflash_candidates,
     get_newsflash_content_by_id,
     get_article_content_by_id,
-    get_articles as fetch_odaily_articles,
     get_article_candidates,
 )
 
 
-def _format_odaily_entries(entries: List[Dict], entry_type: str) -> str:
-    if not entries:
-        return f"No {entry_type} entries found for the requested window."
-
-    lines = [f"{entry_type.title()} entries ({len(entries)}):"]
-    for entry in entries:
-        published = entry.get("published") or entry.get("fetched_at")
-        title = entry.get("title") or "Untitled"
-        summary = entry.get("summary") or ""
-        lines.append(
-            f"- [{published}] {title}\n  Summary: {summary}"
-        )
-    return "\n".join(lines)
-
-
 def _parse_entry_ids(raw: str) -> List[str]:
-    """Normalize comma/newline separated entry IDs."""
+    """规范化逗号/换行分隔的 entry ID。"""
     if not raw:
         return []
     normalized = raw.replace("\n", ",")
@@ -35,7 +19,7 @@ def _parse_entry_ids(raw: str) -> List[str]:
         candidate = token.strip()
         if not candidate:
             continue
-        # Allow inputs such as "ID=123", URLs with trailing digits, etc.
+        # 允许 "ID=123" 或 URL 末尾带数字等格式
         if "=" in candidate:
             candidate = candidate.split("=", 1)[1].strip()
         last_segment = candidate.split("/")[-1].strip()
@@ -51,11 +35,11 @@ def _parse_entry_ids(raw: str) -> List[str]:
 
 @tool
 def get_crypto_newsflash_candidates(
-    limit: Annotated[int, "Number of titles to retrieve"] = 40,
-    lookback_hours: Annotated[int, "Lookback window in hours"] = 6,
+    limit: Annotated[int, "返回标题数量"] = 40,
+    lookback_hours: Annotated[int, "回溯窗口（小时）"] = 6,
 ) -> str:
     """
-    Retrieve recent Odaily newsflash titles with metadata for LLM screening.
+    获取最近的 Odaily 快讯标题与元数据，供 LLM 筛选。
     """
     entries = get_newsflash_candidates(limit=limit, lookback_hours=lookback_hours)
     if not entries:
@@ -68,10 +52,10 @@ def get_crypto_newsflash_candidates(
 
 @tool
 def get_crypto_newsflash_content(
-    entry_ids: Annotated[str, "Comma-separated entry IDs returned from candidate list"],
+    entry_ids: Annotated[str, "候选列表返回的 entry_id（逗号分隔）"],
 ) -> str:
     """
-    Retrieve key fields (title, summary, published) from Odaily newsflashes by entry_id list.
+    根据 entry_id 列表获取 Odaily 快讯的关键字段（标题、摘要、发布时间）。
     """
     parsed_ids = _parse_entry_ids(entry_ids)
     if not parsed_ids:
@@ -97,24 +81,12 @@ def get_crypto_newsflash_content(
 
 
 @tool
-def get_crypto_longform_articles(
-    limit: Annotated[int, "Maximum number of articles to return"] = 3,
-    lookback_days: Annotated[int, "Lookback window in days"] = 7,
-) -> str:
-    """
-    Retrieve longer-form crypto articles from Odaily RSS and store cached copies in SQLite.
-    """
-    entries = fetch_odaily_articles(limit=limit, lookback_days=lookback_days)
-    return _format_odaily_entries(entries, "article")
-
-
-@tool
 def get_crypto_longform_candidates(
-    limit: Annotated[int, "Number of titles to retrieve"] = 20,
-    lookback_days: Annotated[int, "Lookback window in days"] = 7,
+    limit: Annotated[int, "返回标题数量"] = 20,
+    lookback_days: Annotated[int, "回溯窗口（天）"] = 7,
 ) -> str:
     """
-    Retrieve recent Odaily long-form article titles with metadata for LLM screening.
+    获取最近的 Odaily 长文标题与元数据，供 LLM 筛选。
     """
     entries = get_article_candidates(limit=limit, lookback_days=lookback_days)
     if not entries:
@@ -127,10 +99,10 @@ def get_crypto_longform_candidates(
 
 @tool
 def get_crypto_article_content(
-    entry_id: Annotated[str, "Entry ID returned from candidate list"],
+    entry_id: Annotated[str, "候选列表返回的 entry_id"],
 ) -> str:
     """
-    Retrieve key fields (title, summary, published) from Odaily by entry_id.
+    根据 entry_id 获取 Odaily 长文的关键字段（标题、摘要、发布时间）。
     """
     article = get_article_content_by_id(entry_id)
     if not article:

@@ -139,6 +139,16 @@ class BinanceFuturesService:
             recv_window=self.settings.recv_window,
         )
 
+    def cancel_all_algo_orders(self, symbol: str) -> Dict[str, Any]:
+        cancel_func = getattr(self._rest, "cancel_all_algo_open_orders", None)
+        if cancel_func is None:
+            raise BinanceFuturesError("当前 SDK 不支持取消算法委托操作。")
+        return self._call_rest(
+            cancel_func,
+            symbol=symbol.upper(),
+            recv_window=self.settings.recv_window,
+        )
+
     def configure_exit_orders(
         self,
         symbol: str,
@@ -167,11 +177,14 @@ class BinanceFuturesService:
         working_type = working_type.upper() if working_type else "MARK_PRICE"
 
         if replace_existing:
-            self.cancel_symbol_orders(symbol)
+            try:
+                self.cancel_all_algo_orders(symbol)
+            except BinanceFuturesError:
+                self.cancel_symbol_orders(symbol)
 
         results: Dict[str, Any] = {}
         if stop_loss_price is not None and stop_loss_price > 0:
-            results["stop_loss"] = self._submit_exit_order(
+            results["stop_loss"] = self._submit_algo_exit_order(
                 symbol=symbol,
                 side=closing_side,
                 order_type="STOP_MARKET",
@@ -179,7 +192,7 @@ class BinanceFuturesService:
                 working_type=working_type,
             )
         if take_profit_price is not None and take_profit_price > 0:
-            results["take_profit"] = self._submit_exit_order(
+            results["take_profit"] = self._submit_algo_exit_order(
                 symbol=symbol,
                 side=closing_side,
                 order_type="TAKE_PROFIT_MARKET",
@@ -324,12 +337,32 @@ class BinanceFuturesService:
             "symbol": symbol.upper(),
             "side": side.upper(),
             "type": order_type,
-            "stopPrice": self._normalize_price(trigger_price),
-            "closePosition": True,
-            "workingType": working_type.upper(),
+            "stop_price": self._normalize_price(trigger_price),
+            "close_position": True,
+            "working_type": working_type.upper(),
             "recv_window": self.settings.recv_window,
         }
         return self._call_rest(self._rest.new_order, **params)
+
+    def _submit_algo_exit_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        trigger_price: float | str,
+        working_type: str,
+    ) -> Dict[str, Any]:
+        return self._call_rest(
+            self._rest.new_algo_order,
+            algo_type="CONDITIONAL",
+            symbol=symbol.upper(),
+            side=side.upper(),
+            type=order_type,
+            trigger_price=float(self._normalize_price(trigger_price)),
+            working_type=working_type.upper(),
+            close_position="true",
+            recv_window=self.settings.recv_window,
+        )
 
     def _get_symbol_info(self, symbol: str) -> Dict[str, Any]:
         symbol = symbol.upper()

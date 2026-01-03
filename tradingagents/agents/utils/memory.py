@@ -3,17 +3,15 @@ import logging
 import os
 import random
 from math import sqrt
+from typing import Any, Dict, cast, List, Literal
+from dotenv import load_dotenv
 
 try:
     import chromadb
     from chromadb.config import Settings
-
-    _CHROMA_AVAILABLE = True
-    _CHROMA_IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover - best effort fallback
+except Exception as exc:  # pragma: no cover - hard fail
     chromadb = None
     Settings = None
-    _CHROMA_AVAILABLE = False
     _CHROMA_IMPORT_ERROR = exc
 
 from openai import OpenAI
@@ -21,117 +19,6 @@ from openai import OpenAIError
 
 
 logger = logging.getLogger(__name__)
-
-
-class _SimpleMemoryCollection:
-    """简单的内存向量库，实现 Chroma 集合的最小替代品。"""
-
-    def __init__(self, name):
-        self.name = name
-        self._documents = []
-        self._metadatas = []
-        self._embeddings = []
-        self._ids = []
-
-    def count(self):
-        return len(self._documents)
-
-    def add(self, documents, metadatas, embeddings, ids):  # ids kept for parity
-        self._documents.extend(documents)
-        self._metadatas.extend(metadatas)
-        self._embeddings.extend(embeddings)
-        self._ids.extend(ids)
-
-    def _cosine_distance(self, a, b):
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = sqrt(sum(x * x for x in a))
-        norm_b = sqrt(sum(x * x for x in b))
-        if not norm_a or not norm_b:
-            return 1.0
-        return 1 - (dot / (norm_a * norm_b))
-
-    def query(self, query_embeddings, n_results, include):
-        if not self._documents:
-            return {key: [[]] for key in include}
-
-        query_emb = query_embeddings[0]
-        scored = [
-            (self._cosine_distance(query_emb, emb), idx)
-            for idx, emb in enumerate(self._embeddings)
-        ]
-        scored.sort(key=lambda item: item[0])
-        top = scored[:n_results]
-
-        result = {key: [[]] for key in include}
-        for distance, idx in top:
-            if "documents" in include:
-                result.setdefault("documents", [[]])[0].append(self._documents[idx])
-            if "metadatas" in include:
-                result.setdefault("metadatas", [[]])[0].append(self._metadatas[idx])
-            if "distances" in include:
-                result.setdefault("distances", [[]])[0].append(distance)
-        return result
-
-    def get(self, ids=None, where=None, limit=None, include=None):
-        indices = list(range(len(self._documents)))
-        if ids:
-            target = set(ids)
-            indices = [idx for idx in indices if self._ids[idx] in target]
-        if where:
-            indices = [idx for idx in indices if self._match_where(self._metadatas[idx], where)]
-        if limit is not None:
-            indices = indices[:limit]
-
-        result = {
-            "ids": [self._ids[idx] for idx in indices],
-            "documents": [self._documents[idx] for idx in indices],
-            "metadatas": [self._metadatas[idx] for idx in indices],
-        }
-        if include and "embeddings" in include:
-            result["embeddings"] = [self._embeddings[idx] for idx in indices]
-        return result
-
-    def delete(self, ids=None, where=None):
-        if ids is None and where is None:
-            self._documents.clear()
-            self._metadatas.clear()
-            self._embeddings.clear()
-            self._ids.clear()
-            return
-
-        indices = list(range(len(self._documents)))
-        if ids:
-            target = set(ids)
-            indices = [idx for idx in indices if self._ids[idx] in target]
-        if where:
-            indices = [idx for idx in indices if self._match_where(self._metadatas[idx], where)]
-
-        for idx in sorted(indices, reverse=True):
-            del self._documents[idx]
-            del self._metadatas[idx]
-            del self._embeddings[idx]
-            del self._ids[idx]
-
-    def _match_where(self, metadata, where_clause):
-        if not where_clause:
-            return True
-        metadata = metadata or {}
-        for key, expected in where_clause.items():
-            actual = metadata.get(key)
-            if isinstance(expected, dict):
-                for op, value in expected.items():
-                    if op == "$gte" and not (actual is not None and actual >= value):
-                        return False
-                    if op == "$lt" and not (actual is not None and actual < value):
-                        return False
-                    if op == "$lte" and not (actual is not None and actual <= value):
-                        return False
-                    if op == "$gt" and not (actual is not None and actual > value):
-                        return False
-            else:
-                if actual != expected:
-                    return False
-        return True
 
 
 class FinancialSituationMemory:
@@ -158,8 +45,8 @@ class FinancialSituationMemory:
             logger.warning("无法初始化阿里云 embedding 客户端，将使用本地降级方案: %s", exc)
             self.client = None
 
-        self.situation_collection = None
-        self.chroma_client = None
+        self.situation_collection: Any = None
+        self.chroma_client: Any = None
         self._fallback_dim = 256
         self._remote_embeddings_enabled = self.client is not None
         self._max_remote_input_len = 8192
@@ -168,29 +55,22 @@ class FinancialSituationMemory:
         chroma_path = config.get("chroma_path") or os.path.join(
             config.get("project_dir", os.getcwd()), "data", "chroma_store"
         )
-
-        if use_chroma and _CHROMA_AVAILABLE:
-            try:
-                os.makedirs(chroma_path, exist_ok=True)
-                self.chroma_client = chromadb.PersistentClient(
-                    path=chroma_path,
-                    settings=Settings(allow_reset=True),
-                )
-                self.situation_collection = self.chroma_client.get_or_create_collection(
-                    name=name
-                )
-            except Exception as exc:
-                logger.warning("Chroma 初始化失败，自动使用内存向量库: %s", exc)
-        elif use_chroma and not _CHROMA_AVAILABLE:
-            logger.warning("检测到 use_chroma_memory=True，但本地未安装 chromadb，自动使用内存向量库。")
-
+        if not use_chroma:
+            raise RuntimeError("use_chroma_memory=False 当前已不支持内存向量库降级。")
+        if chromadb is None or Settings is None:
+            raise RuntimeError(
+                f"Chroma 未安装或导入失败: {_CHROMA_IMPORT_ERROR}. 请安装 chromadb。"
+            )
+        os.makedirs(chroma_path, exist_ok=True)
+        self.chroma_client = chromadb.PersistentClient(
+            path=chroma_path,
+            settings=Settings(allow_reset=True),
+        )
+        self.situation_collection = self.chroma_client.get_or_create_collection(
+            name=name
+        )
         if self.situation_collection is None:
-            if _CHROMA_IMPORT_ERROR:
-                logger.warning(
-                    "Chroma import failed (%s). Using simple in-memory memory store instead.",
-                    _CHROMA_IMPORT_ERROR,
-                )
-            self.situation_collection = _SimpleMemoryCollection(name)
+            raise RuntimeError("Chroma collection 初始化失败。")
 
     def get_embedding(self, text):
         """获取文本的 embedding，用远程服务失败时自动降级为本地 hash 向量。"""
@@ -251,7 +131,8 @@ class FinancialSituationMemory:
         ids = []
         embeddings = []
 
-        offset = self.situation_collection.count()
+        collection = cast(Any, self.situation_collection)
+        offset = collection.count()
 
         for i, (situation, recommendation) in enumerate(situations_and_advice):
             situations.append(situation)
@@ -267,7 +148,7 @@ class FinancialSituationMemory:
                 base_meta.update(extra)
             metadatas.append(base_meta)
 
-        self.situation_collection.add(
+        collection.add(
             documents=situations,
             metadatas=metadatas,
             embeddings=embeddings,
@@ -277,7 +158,13 @@ class FinancialSituationMemory:
     def get_entries(self, where=None, limit=None):
         """按 metadata 过滤原始条目，返回 [{id, document, metadata}, ...]。"""
         include = ["metadatas", "documents", "ids"]
-        raw = self.situation_collection.get(where=where, limit=limit, include=include)
+        collection = cast(Any, self.situation_collection)
+        include_typed: List[Literal["metadatas", "documents", "ids"]] = [
+            "metadatas",
+            "documents",
+            "ids",
+        ]
+        raw = collection.get(where=where, limit=limit, include=include_typed)
         ids = raw.get("ids") or raw.get("ids", [])
         documents = raw.get("documents") or []
         metadatas = raw.get("metadatas") or []
@@ -313,22 +200,29 @@ class FinancialSituationMemory:
             delete_kwargs["where"] = where
         if not delete_kwargs:
             return
-        self.situation_collection.delete(**delete_kwargs)
+        collection = cast(Any, self.situation_collection)
+        collection.delete(**delete_kwargs)
 
     def get_memories(self, current_situation, n_matches=1):
         """根据当前情景查找最相似的历史建议。"""
         query_embedding = self.get_embedding(current_situation)
 
-        results = self.situation_collection.query(
+        collection = cast(Any, self.situation_collection)
+        include_query: List[Literal["metadatas", "documents", "distances"]] = [
+            "metadatas",
+            "documents",
+            "distances",
+        ]
+        results = collection.query(
             query_embeddings=[query_embedding],
             n_results=n_matches,
-            include=["metadatas", "documents", "distances"],
+            include=include_query,
         )
 
         matched_results = []
-        documents = results.get("documents") or [[]]
-        metadatas = results.get("metadatas") or [[]]
-        distances = results.get("distances") or [[]]
+        documents = cast(List[List[Any]], results.get("documents") or [[]])
+        metadatas = cast(List[List[Dict[str, Any]]], results.get("metadatas") or [[]])
+        distances = cast(List[List[float]], results.get("distances") or [[]])
 
         if not documents or not documents[0]:
             return matched_results
@@ -348,43 +242,30 @@ class FinancialSituationMemory:
 
 
 if __name__ == "__main__":
-    # 使用示例
-    matcher = FinancialSituationMemory("demo_memory", {"backend_url": None})
+    load_dotenv()
+    # 用于 trade 复盘向量库的示例
+    matcher = FinancialSituationMemory(
+        "trade_memory",
+        {
+            "project_dir": os.getcwd(),
+            "use_chroma_memory": True,
+        },
+    )
 
-    # 示例情景与建议
     example_data = [
         (
-            "通胀高企、利率上行、消费支出走弱",
-            "优先考虑防御型板块，例如必选消费与公用事业，同时回顾固收久期配置。",
-        ),
-        (
-            "科技板块波动剧烈，机构抛售压力上升",
-            "降低高成长科技敞口，寻找现金流稳健的成熟科技公司价值机会。",
-        ),
-        (
-            "美元走强冲击新兴市场，外汇波动上升",
-            "对海外仓位做汇率对冲，适度下调新兴市场债券配置。",
-        ),
-        (
-            "收益率走高引发板块轮动迹象",
-            "重新平衡组合，增配受益于高利率环境的行业。",
-        ),
+            "开仓上下文: BTC 多头，趋势转强，关键支撑 98000。\n平仓上下文: 触发止盈，波动回落。",
+            '{"summary":"止盈兑现","hypothesis_check":"趋势成立","execution_review":"按计划执行",'
+            '"value_assessment":"高","mistake_tags":[],"next_rules":["继续跟踪支撑位"]}',
+        )
     ]
 
     matcher.add_situations(example_data)
 
-    current_situation = """
-    科技板块波动扩大，机构投资者持续减仓，利率上行侵蚀成长股估值
-    """
-
-    try:
-        recommendations = matcher.get_memories(current_situation, n_matches=2)
-
-        for i, rec in enumerate(recommendations, 1):
-            print(f"\n匹配案例 {i}:")
-            print(f"相似度: {rec['similarity_score']:.2f}")
-            print(f"匹配情境: {rec['matched_situation']}")
-            print(f"建议: {rec['recommendation']}")
-
-    except Exception as e:
-        print(f"推荐时出现错误: {str(e)}")
+    current_situation = "开仓上下文: BTC 多头，趋势转强。平仓上下文: 触发止盈。"
+    recommendations = matcher.get_memories(current_situation, n_matches=1)
+    for i, rec in enumerate(recommendations, 1):
+        print(f"\n匹配案例 {i}:")
+        print(f"相似度: {rec['similarity_score']:.2f}")
+        print(f"匹配情境: {rec['matched_situation']}")
+        print(f"复盘: {rec['recommendation']}")

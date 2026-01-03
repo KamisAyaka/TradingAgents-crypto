@@ -25,8 +25,6 @@ def create_trader(llm, trader_round_store):
         asset_list = ", ".join(assets)
 
         market_research_report = state["market_report"]
-        newsflash_report = state["newsflash_report"]
-        longform_report = state["longform_report"]
 
         debate_history = investment_debate_state.get("history", "")
         positions_info = state.get("current_positions") or "未获取仓位信息"
@@ -49,11 +47,12 @@ def create_trader(llm, trader_round_store):
 
 ### 工作流程
 1. 使用系统提供的当前持仓信息（可能为空仓），判断是否需要继续持有、减仓、平仓，并说明与本轮计划的关系。
-2. 综合所有资料，对比多个资产的胜率/盈亏比，只选出最有把握的 0-1 个资产执行（其余资产一律 WAIT 或平仓）。如果执行交易，**必须将全部本金集中在单一资产**，严禁分散资金。
+2. 综合所有资料，对比多个资产的胜率/盈亏比，只选出最有把握的 1 个资产执行（其余资产一律 WAIT 或平仓）。如果执行交易，**必须将全部本金集中在单一资产**，严禁分散资金。
 3. 为候选资产给出“全额本金（{capital_hint} USDT）× 杠杆”后的交易方案，明确选择的杠杆倍数（整数 5-25x）与方向，并说明为何舍弃其他币种。
 4. 必须给出**明确的数值入场价**、止损价与至少一个止盈价，并写明触发/失效条件、仓位 sizing、风险控制和监控指标（per-asset）。
-5. 风控硬约束：按入场价与杠杆折算的最大亏损不得超过 10%。若止损距离超过该上限，系统将强制调整止损，请提前给出合理数值。
-6. 输出单行 JSON，字段固定。
+5. 风控硬约束：按入场价与杠杆折算的最大亏损不得超过本金的 10%。若止损距离超过该上限，系统将强制调整止损，请提前给出合理数值。
+6. 说明当价格触达止损/止盈价时系统应执行的动作（被动触发也需要说明如何记录与复盘）。
+7. 输出单行 JSON，字段固定。
 
 ### 参考资料
 - 牛熊辩论记录：{debate_history or '暂无辩论记录'}
@@ -86,7 +85,8 @@ JSON 结构：
         "stop_loss_price": "建议的止损价格（USDT，数值）",
         "take_profit_rule": "止盈/分批规则（包含价格）",
         "take_profit_targets": ["止盈价1","止盈价2（USDT，数值）"],
-        "monitoring": ["需要持续跟踪的信号"]
+        "monitoring": ["需要持续跟踪的信号"],
+        "alert_action": "触发止损/止盈价后系统应执行的动作说明"
       }}
     }}
   ],

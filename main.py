@@ -8,26 +8,8 @@ from tradingagents.default_config import DEFAULT_CONFIG
 # Load environment variables from .env file
 load_dotenv()
 
-# Create a custom config
+# Create a config based on defaults
 config = DEFAULT_CONFIG.copy()
-
-# 使用 ModelScope 上的 Qwen2.5 Coder 系列，区分快/慢两路：
-# - 快速思考：较小模型（例如 7B）
-# - 深度思考：较大模型（32B）
-config["llm_provider"] = "openai"
-config["quick_llm_provider"] = "openai"
-config["deep_llm_provider"] = "openai"
-
-# 如果你想换别的尺寸，只需要改成对应的模型名即可
-config["quick_think_llm"] = "Qwen/Qwen2.5-14B-Instruct"
-config["deep_think_llm"] = "Qwen/Qwen3-14B"
-
-# 通过 ModelScope 的 OpenAI 兼容接口调用 Qwen
-config["backend_url"] = "https://api-inference.modelscope.cn/v1/"
-config["quick_backend_url"] = "https://api-inference.modelscope.cn/v1/"
-config["deep_backend_url"] = "https://api-inference.modelscope.cn/v1/"
-config["max_debate_rounds"] = 1
-config["use_chroma_memory"] = True
 
 # Initialize with custom config
 ta = TradingAgentsGraph(

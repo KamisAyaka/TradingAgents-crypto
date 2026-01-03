@@ -2,6 +2,7 @@
 
 import os
 import json
+from pathlib import Path
 import logging
 from datetime import date, datetime, timezone
 from typing import Dict, Any, Optional, cast
@@ -19,6 +20,7 @@ from tradingagents.agents.utils.agent_states import (
     AgentState,
 )
 from tradingagents.dataflows.trader_round_memory import TraderRoundMemoryStore
+from tradingagents.dataflows.trace_store import TraceStore
 from tradingagents.agents.reflection.trade_cycle_reflector import TradeCycleReflector
 
 # Import the new abstract tool methods from agent_utils
@@ -36,6 +38,7 @@ from tradingagents.agents.utils.binance_trade_tools import (
     close_binance_position,
     set_binance_take_profit_stop_loss,
 )
+from tradingagents.dataflows.binance_future import get_service
 
 from .conditional_logic import ConditionalLogic
 from .setup import GraphSetup
@@ -60,9 +63,7 @@ class TradingAgentsGraph:
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
-        self.suppress_console_output = self.config.get("suppress_console_output", False)
-
-
+        
         quick_provider = (
             self.config.get("quick_llm_provider") or self.config["llm_provider"]
         )
@@ -93,6 +94,10 @@ class TradingAgentsGraph:
             self.config.get("trader_round_db_path")
             or os.path.join(self.config["results_dir"], "trader_round_memory.db")
         )
+        self.trace_store = TraceStore(
+            self.config.get("trace_db_path")
+            or os.path.join(self.config["results_dir"], "trace_store.db")
+        )
         # 创建工具节点
         self.tool_nodes = self._create_tool_nodes()
 
@@ -119,12 +124,12 @@ class TradingAgentsGraph:
 
     def _initialize_llm(self, provider: str, model_name: str, backend_url: Optional[str]):
         provider = provider.lower()
-        model_kwargs: Dict[str, Any] = {"extra_body": {"enable_thinking": False}}
+        extra_body: Dict[str, Any] = {"enable_thinking": False}
         if provider in ("openai", "ollama", "openrouter"):
             base = backend_url or "https://api.openai.com/v1"
             if provider == "openrouter" and backend_url is None:
                 base = "https://openrouter.ai/api/v1"
-            return ChatOpenAI(model=model_name, base_url=base, model_kwargs=model_kwargs)
+            return ChatOpenAI(model=model_name, base_url=base, extra_body=extra_body)
         if provider == "deepseek":
             base = backend_url or "https://api.deepseek.com/v1"
             api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -136,7 +141,7 @@ class TradingAgentsGraph:
                 model=model_name,
                 base_url=base,
                 api_key=SecretStr(api_key),
-                model_kwargs=model_kwargs,
+                extra_body=extra_body,
             )
         if provider == "google":
             return ChatGoogleGenerativeAI(model=model_name)
@@ -235,8 +240,16 @@ class TradingAgentsGraph:
         # 保存最终状态，供反思用
         self.curr_state = final_state
         self._record_trader_round_summary(final_state)
+        self._persist_trace_snapshot(final_state)
 
         # 返回完整状态与提炼后的最终信号
+        pending = final_state.pop("_pending_trade_info", None)
+        if pending:
+            for info in pending:
+                try:
+                    self.record_trade_reflection(info)
+                except Exception as exc:  # pragma: no cover
+                    self.logger.warning("自动复盘失败: %s", exc)
         return final_state, final_state["final_trade_decision"]
 
     def _apply_risk_controls_and_execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -263,9 +276,6 @@ class TradingAgentsGraph:
             if not isinstance(decision, dict):
                 continue
             action = str(decision.get("decision") or "").upper()
-            exec_action = action
-            if action in {"CLOSE_LONG", "CLOSE_SHORT"}:
-                exec_action = "CLOSE"
             if action not in {"LONG", "SHORT"}:
                 continue
 
@@ -316,6 +326,9 @@ class TradingAgentsGraph:
             },
             ensure_ascii=False,
         )
+        pending = [item["trade_info"] for item in execution_results if item.get("trade_info")]
+        if pending:
+            state["_pending_trade_info"] = pending
         return state
 
     def _execute_plan(
@@ -332,6 +345,7 @@ class TradingAgentsGraph:
             asset = str(decision.get("asset") or "")
             action = str(decision.get("decision") or "").upper()
             exec_action = action
+            trade_info = None
             if action in {"CLOSE_LONG", "CLOSE_SHORT"}:
                 exec_action = "CLOSE"
             execution = decision.get("execution") or {}
@@ -381,6 +395,14 @@ class TradingAgentsGraph:
                     warnings.append("存在未提供 asset 的平仓决策，已跳过执行。")
                     continue
                 entry_result = close_binance_position.invoke({"symbol": asset})
+                self.trader_round_store.delete_position_state(asset)
+                trade_info = self._build_trade_info_from_open_entry(
+                    asset, exec_action, None
+                )
+                if trade_info:
+                    trade_info["exit_price"] = self._safe_mark_price(asset)
+                    trade_info["exit_time"] = datetime.now(timezone.utc).isoformat()
+                    trade_info["notes"] = "active_close"
 
             if exec_action in {"LONG", "SHORT", "CLOSE"}:
                 results.append(
@@ -390,6 +412,7 @@ class TradingAgentsGraph:
                         "set_leverage": leverage_result,
                         "entry_order": entry_result,
                         "protection": protection_result,
+                        "trade_info": trade_info if exec_action == "CLOSE" else None,
                     }
                 )
         return results
@@ -455,8 +478,19 @@ class TradingAgentsGraph:
         """
         if not trade_info:
             return None
+        state_snapshot = dict(self.curr_state or {})
+        symbol = trade_info.get("symbol") or ""
+        if symbol:
+            open_entry = self.trader_round_store.get_latest_open_entry(symbol)
+            if open_entry:
+                state_snapshot["open_position_context"] = (
+                    f"{open_entry.get('summary')}\n\n{open_entry.get('situation')}"
+                )
+        state_snapshot["close_position_context"] = self._build_context_snapshot(
+            state_snapshot
+        )
         try:
-            result = self.trade_reflector.reflect(trade_info, self.curr_state or {})
+            result = self.trade_reflector.reflect(trade_info, state_snapshot)
         except Exception as exc:  # pragma: no cover
             self.logger.warning("生成交易复盘失败：%s", exc)
             return None
@@ -464,7 +498,7 @@ class TradingAgentsGraph:
         context = result.get("context")
         if not summary or not context:
             return None
-        metadata = {
+        raw_metadata = {
             "memory_type": "trade",
             "symbol": trade_info.get("symbol"),
             "side": trade_info.get("side"),
@@ -475,6 +509,8 @@ class TradingAgentsGraph:
             "notional": trade_info.get("notional"),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+        # Filter out None values to prevent vector store errors (e.g. ChromaDB constraint)
+        metadata = {k: v for k, v in raw_metadata.items() if v is not None}
         self.trade_memory.add_situations(
             [(context, summary)],
             metadata_list=[metadata],
@@ -489,6 +525,148 @@ class TradingAgentsGraph:
             return
         self.trader_round_store.add_round(**summary_data)
         self.trader_round_store.prune_recent(keep_n=100)
+
+    def _persist_trace_snapshot(self, state: Dict[str, Any]) -> None:
+        plan_text = state.get("trader_investment_plan") or ""
+        plan = self._extract_plan_json(plan_text) or {}
+        final_decision_text = state.get("final_trade_decision") or ""
+        final_decision = self._extract_plan_json(final_decision_text) or {}
+
+        trade_plan_summary = None
+        per_asset = plan.get("per_asset_decisions") or []
+        if per_asset:
+            trade_plan_summary = per_asset[0]
+
+        risk_control = final_decision.get("risk_control") or {}
+        execution = final_decision.get("execution") or []
+        tool_calls: list[dict[str, Any]] = []
+        for item in execution:
+            if not isinstance(item, dict):
+                continue
+            asset = item.get("asset")
+            for key in ("set_leverage", "entry_order", "protection"):
+                value = item.get(key)
+                if value:
+                    tool_calls.append(
+                        {
+                            "asset": asset,
+                            "tool": key,
+                            "result": value,
+                        }
+                    )
+
+        def _stringify(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except Exception:
+                return str(value)
+
+        trace_events = [
+            {
+                "title": "Market Analyst",
+                "status": "completed" if state.get("market_report") else "skipped",
+                "detail": _stringify(state.get("market_report")),
+            },
+            {
+                "title": "Newsflash Analyst",
+                "status": "completed" if state.get("newsflash_report") else "skipped",
+                "detail": _stringify(state.get("newsflash_report")),
+            },
+            {
+                "title": "Longform Cache",
+                "status": "completed" if state.get("longform_report") else "skipped",
+                "detail": _stringify(state.get("longform_report")),
+            },
+            {
+                "title": "Debate",
+                "status": "completed",
+                "detail": _stringify(
+                    (state.get("investment_debate_state") or {}).get("history")
+                ),
+            },
+            {
+                "title": "Trader",
+                "status": "completed" if plan else "skipped",
+                "detail": _stringify(plan_text),
+            },
+            {
+                "title": "Risk Control",
+                "status": "adjusted" if risk_control.get("adjustments") else "completed",
+                "detail": _stringify(risk_control),
+            },
+            {
+                "title": "Execution",
+                "status": "completed" if execution else "skipped",
+                "detail": _stringify(execution),
+            },
+        ]
+
+        thread = []
+        debate = state.get("investment_debate_state") or {}
+        if state.get("market_report"):
+            thread.append(
+                {
+                    "role": "Analyst",
+                    "name": "Market",
+                    "content": _stringify(state.get("market_report")),
+                }
+            )
+        if state.get("newsflash_report"):
+            thread.append(
+                {
+                    "role": "Analyst",
+                    "name": "Newsflash",
+                    "content": _stringify(state.get("newsflash_report")),
+                }
+            )
+        if state.get("longform_report"):
+            thread.append(
+                {
+                    "role": "Analyst",
+                    "name": "Longform",
+                    "content": _stringify(state.get("longform_report")),
+                }
+            )
+        if debate.get("history"):
+            thread.append(
+                {
+                    "role": "Debate",
+                    "name": "Bull vs Bear",
+                    "content": _stringify(debate.get("history")),
+                }
+            )
+        if plan_text:
+            thread.append(
+                {
+                    "role": "Trader",
+                    "name": "Trader",
+                    "content": _stringify(plan_text),
+                }
+            )
+
+        trace_payload = {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "assets": state.get("assets_under_analysis") or [],
+            "trace_events": trace_events,
+            "thread": thread,
+            "plan": trade_plan_summary,
+            "final_trade_decision": final_decision,
+            "risk_logs": {
+                "adjustments": risk_control.get("adjustments") or [],
+                "warnings": risk_control.get("warnings") or [],
+            },
+            "tool_calls": tool_calls,
+        }
+
+        try:
+            payload_text = json.dumps(trace_payload, ensure_ascii=False)
+            self.trace_store.add_trace(payload_text, trace_payload["created_at"])
+        except Exception:
+            self.logger.warning("写入 trace 失败", exc_info=True)
 
     def _build_trader_round_summary(
         self, state: Dict[str, Any], plan: Dict[str, Any]
@@ -534,7 +712,19 @@ class TradingAgentsGraph:
             f"[下轮关注] {', '.join(monitoring or invalidations or ['暂无'])}",
         ]
         summary = "\n".join(summary_lines)
-        situation = f"{asset or '多资产'} | {decision} | {thesis or '无'}"
+        if decision in {"LONG", "SHORT"}:
+            situation = self._build_context_snapshot(state)
+        else:
+            situation = f"{asset or '多资产'} | {decision} | {thesis or '无'}"
+
+        alert_low = None
+        alert_high = None
+        stop_val = self._coerce_float(stop_loss)
+        take_val = self._coerce_float(take_profit)
+        if stop_val:
+            alert_low = stop_val
+        if take_val:
+            alert_high = take_val
 
         return {
             "summary": summary,
@@ -544,82 +734,165 @@ class TradingAgentsGraph:
             "decision": decision,
             "asset": asset,
             "is_open_entry": decision in {"LONG", "SHORT"},
+            "alert_low": alert_low,
+            "alert_high": alert_high,
+            "entry_price": self._coerce_float(entry_price),
+            "stop_loss": self._coerce_float(stop_loss),
+            "take_profit": self._coerce_float(take_profit),
+            "leverage": self._coerce_int(leverage),
         }
 
-    def _serialize_message(self, message):
-        """将 LangChain 消息尽力序列化为 JSON 结构。"""
+    @staticmethod
+    def _truncate_text(text: Any, limit: int = 600) -> str:
+        raw = text or ""
+        if not isinstance(raw, str):
+            raw = str(raw)
+        raw = raw.strip()
+        if len(raw) <= limit:
+            return raw
+        return raw[:limit].rstrip() + "..."
 
-        def _safe_content(content):
-            if isinstance(content, (str, int, float, type(None))):
-                return content
+    def _build_context_snapshot(self, state: Dict[str, Any]) -> str:
+        debate = state.get("investment_debate_state") or {}
+        market = self._summarize_market_report(state.get("market_report"))
+        newsflash = self._summarize_newsflash_report(state.get("newsflash_report"))
+        longform = self._summarize_longform_report(state.get("longform_report"))
+        snapshot = {
+            "market": market,
+            "newsflash": newsflash,
+            "longform": longform,
+        }
+        return json.dumps(snapshot, ensure_ascii=False)
+
+    def _build_trade_info_from_open_entry(
+        self, symbol: str, action: str, price: Optional[float]
+    ) -> Optional[Dict[str, Any]]:
+        entry = self.trader_round_store.get_latest_open_entry(symbol)
+        if not entry:
+            return None
+        side = "LONG" if entry.get("decision") == "LONG" else "SHORT"
+        entry_price = entry.get("entry_price")
+        exit_price = price
+        pnl = None
+        if entry_price and exit_price:
+            direction = 1 if side == "LONG" else -1
+            pnl = (exit_price - entry_price) / entry_price * direction
+        return {
+            "symbol": symbol,
+            "side": side,
+            "entry_time": entry.get("created_at"),
+            "entry_price": entry_price,
+            "exit_time": None,
+            "exit_price": exit_price,
+            "leverage": entry.get("leverage"),
+            "notional": None,
+            "pnl": pnl,
+            "stop_loss": entry.get("stop_loss"),
+            "take_profit": entry.get("take_profit"),
+            "notes": "",
+        }
+
+    def _safe_mark_price(self, symbol: str) -> Optional[float]:
+        try:
+            return get_service().get_mark_price(symbol)
+        except Exception:
+            return None
+
+    def run_analysts_only(self, asset_symbols) -> Dict[str, Any]:
+        trade_date = date.today().isoformat()
+        state = cast(
+            AgentState,
+            self.propagator.create_initial_state(asset_symbols, trade_date),
+        )
+        market_node = create_crypto_market_analyst(self.deep_thinking_llm)
+        news_node = create_crypto_newsflash_analyst(self.quick_thinking_llm)
+        longform_node = create_longform_cache_loader()
+
+        state = cast(
+            AgentState,
+            {
+                **state,
+                **cast(Dict[str, Any], market_node(state)),
+                **cast(Dict[str, Any], news_node(state)),
+                **cast(Dict[str, Any], longform_node(state)),
+            },
+        )
+        return cast(Dict[str, Any], state)
+
+    def _extract_report_json(self, raw: Any) -> Optional[Dict[str, Any]]:
+        if not raw:
+            return None
+        if isinstance(raw, dict):
+            return raw
+        if not isinstance(raw, str):
+            raw = str(raw)
+        raw = raw.strip()
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start == -1 or end == -1 or end <= start:
+                return None
             try:
-                json.dumps(content)
-                return content
-            except TypeError:
-                return str(content)
+                return json.loads(raw[start : end + 1])
+            except Exception:
+                return None
 
-        # 处理元组形式的消息（如初始 human 消息）
-        if isinstance(message, tuple) and len(message) == 2:
-            entry: Dict[str, Any] = {
-                "message_type": message[0],  # "human" 或其他类型
-                "name": None,
-                "content": _safe_content(message[1]),
+    def _summarize_market_report(self, raw: Any) -> Dict[str, Any]:
+        data = self._extract_report_json(raw) or {}
+        per_asset = data.get("per_asset") or []
+        highlights = []
+        for item in per_asset:
+            if not isinstance(item, dict):
+                continue
+            trend = item.get("trend_view") or {}
+            highlights.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "direction": trend.get("direction"),
+                    "indicator_summary": item.get("indicator_summary"),
+                    "triggers": trend.get("triggers"),
+                    "invalidations": trend.get("invalidations"),
+                }
+            )
+        if highlights:
+            return {"analysis_date": data.get("analysis_date"), "per_asset": highlights}
+        return {"raw": self._truncate_text(raw)}
+
+    def _summarize_newsflash_report(self, raw: Any) -> Dict[str, Any]:
+        data = self._extract_report_json(raw) or {}
+        sentiment = data.get("sentiment_summary") or {}
+        themes = []
+        for item in data.get("themes") or []:
+            if not isinstance(item, dict):
+                continue
+            themes.append(
+                {
+                    "theme": item.get("theme"),
+                    "net_effect": item.get("net_effect"),
+                    "impacted_assets": item.get("impacted_assets"),
+                    "highlights": item.get("highlights"),
+                }
+            )
+        if sentiment or themes:
+            return {
+                "analysis_date": data.get("analysis_date"),
+                "sentiment": sentiment,
+                "themes": themes,
             }
-            return entry
-            
-        # 处理字典形式的消息
-        if isinstance(message, dict):
-            entry: Dict[str, Any] = {
-                "message_type": message.get("type", "unknown"),
-                "name": message.get("name", None),
-                "content": _safe_content(message.get("content", "")),
+        return {"raw": self._truncate_text(raw)}
+
+    def _summarize_longform_report(self, raw: Any) -> Dict[str, Any]:
+        data = self._extract_report_json(raw) or {}
+        narrative = data.get("narrative_summary") or {}
+        implications = data.get("trading_implications") or {}
+        if narrative or implications:
+            return {
+                "analysis_date": data.get("analysis_date"),
+                "narrative_summary": narrative,
+                "trading_implications": implications,
             }
-            
-            tool_calls = message.get("tool_calls", None)
-            if tool_calls:
-                entry["tool_calls"] = tool_calls
-                
-            additional = message.get("additional_kwargs", None)
-            if additional:
-                entry["additional_kwargs"] = additional
-                
-            metadata = message.get("response_metadata", None)
-            if metadata:
-                entry["response_metadata"] = metadata
-                
-            return entry
-
-        # 处理 LangChain 消息对象
-        entry: Dict[str, Any] = {
-            "message_type": getattr(message, "type", message.__class__.__name__),
-            "name": getattr(message, "name", None),
-            "content": _safe_content(getattr(message, "content", str(message))),
-        }
-
-        tool_calls = getattr(message, "tool_calls", None)
-        if tool_calls:
-            serialized_calls = []
-            for call in tool_calls:
-                if isinstance(call, dict):
-                    serialized_calls.append(call)
-                else:
-                    serialized_calls.append(
-                        {
-                            "id": getattr(call, "id", None),
-                            "name": getattr(call, "name", None),
-                            "args": _safe_content(
-                                getattr(call, "args", getattr(call, "arguments", None))
-                            ),
-                        }
-                    )
-            entry["tool_calls"] = serialized_calls
-
-        additional = getattr(message, "additional_kwargs", None)
-        if additional:
-            entry["additional_kwargs"] = additional
-
-        metadata = getattr(message, "response_metadata", None)
-        if metadata:
-            entry["response_metadata"] = metadata
-
-        return entry
+        return {"raw": self._truncate_text(raw)}

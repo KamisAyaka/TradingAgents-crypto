@@ -1,0 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Space+Grotesk:wght@300..700&display=swap');
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+@theme {
+  /* Extending theme here if needed, but using config file for now */
+}
+
+@layer base {
+  body {
+    @apply bg-background text-slate-50 font-body antialiased;
+    /* Fintech data precision */
+    font-variant-numeric: tabular-nums;
+    /* Subtle Grid Background */
+    background-image: radial-gradient(circle at 1px 1px, theme('colors.slate.800') 1px, transparent 0);
+    background-size: 24px 24px;
+    background-position: 0 0;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-heading font-bold tracking-tight;
+  }
+}
+
+@layer components {
+  .font-mono-numbers {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+}
+
+/* Custom scrollbar for Webkit */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-background;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-700 rounded-full hover:bg-slate-600;
+}

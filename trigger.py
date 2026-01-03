@@ -1,18 +1,10 @@
-"""
-定时触发器 - 按美国纽约时间调度运行交易分析
-
-调度规则：
-- 纽约时间周一到周五 8:00-20:00：每15分钟触发一次
-- 其他时间：每1小时触发一次
-"""
+"""定时触发器 - 通过价格预警触发分析任务。"""
 
 import logging
 import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.blocking import BlockingScheduler
-from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
 from pydantic import SecretStr
@@ -23,6 +15,8 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.agents.analysts.crypto_longform_analyst import (
     create_crypto_longform_analyst,
 )
+from tradingagents.dataflows.trader_round_memory import TraderRoundMemoryStore
+from tradingagents.dataflows.binance_future import get_service
 
 from fetchers.binance_fetcher import sync_binance_pairs
 from fetchers.odaily_fetcher import sync_articles, sync_newsflash
@@ -35,24 +29,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 纽约时区
-NY_TZ = ZoneInfo("America/New_York")
 
 # 加载环境变量
 load_dotenv()
 
-# 配置 LLM
+# 配置（默认配置 + 环境变量覆盖）
 config = DEFAULT_CONFIG.copy()
-config["llm_provider"] = "openai"
-config["quick_llm_provider"] = "openai"
-config["deep_llm_provider"] = "openai"
-config["quick_think_llm"] = "Qwen/Qwen2.5-14B-Instruct"
-config["deep_think_llm"] = "Qwen/Qwen3-14B"
-config["backend_url"] = "https://api-inference.modelscope.cn/v1/"
-config["quick_backend_url"] = "https://api-inference.modelscope.cn/v1/"
-config["deep_backend_url"] = "https://api-inference.modelscope.cn/v1/"
-config["max_debate_rounds"] = 1
-config["use_chroma_memory"] = True
 
 # 交易参数
 DEFAULT_TICKERS = ["BTCUSDT", "ETHUSDT"]
@@ -64,6 +46,17 @@ DEFAULT_MAX_LEVERAGE = int(config.get("max_leverage", 3))
 ta: TradingAgentsGraph | None = None
 _longform_node = None
 _binance_first_run = True
+_alert_store: TraderRoundMemoryStore | None = None
+
+
+def _get_alert_store() -> TraderRoundMemoryStore:
+    global _alert_store
+    if _alert_store is None:
+        _alert_store = TraderRoundMemoryStore(
+            config.get("trader_round_db_path")
+            or os.path.join(config["results_dir"], "trader_round_memory.db")
+        )
+    return _alert_store
 
 
 def init_trading_graph():
@@ -82,16 +75,23 @@ def init_trading_graph():
 
 def run_analysis():
     """执行一次交易分析"""
-    now_ny = datetime.now(NY_TZ)
-    logger.info(f"========== 开始分析 (纽约时间: {now_ny.strftime('%Y-%m-%d %H:%M:%S')}) ==========")
-    
+    logger.info(f"========== 开始分析 ==========")
+
     try:
+        # 支持从环境变量读取动态配置 (由 Server 注入)
+        assets_env = os.getenv("ANALYSIS_ASSETS")
+        assets = [s.strip() for s in assets_env.split(",")] if assets_env else DEFAULT_TICKERS
+        
+        capital = float(os.getenv("ANALYSIS_CAPITAL", str(DEFAULT_CAPITAL)))
+        min_lev = int(os.getenv("ANALYSIS_MIN_LEVERAGE", str(DEFAULT_MIN_LEVERAGE)))
+        max_lev = int(os.getenv("ANALYSIS_MAX_LEVERAGE", str(DEFAULT_MAX_LEVERAGE)))
+
         graph = init_trading_graph()
         _, decision = graph.propagate(
-            DEFAULT_TICKERS,
-            available_capital=DEFAULT_CAPITAL,
-            min_leverage=DEFAULT_MIN_LEVERAGE,
-            max_leverage=DEFAULT_MAX_LEVERAGE,
+            assets,
+            available_capital=capital,
+            min_leverage=min_lev,
+            max_leverage=max_lev,
         )
         logger.info(f"分析完成，决策: {decision[:500]}..." if len(decision) > 500 else f"分析完成，决策: {decision}")
     except Exception as e:
@@ -126,14 +126,15 @@ def _initialize_longform_node():
     return _longform_node
 
 
-def run_binance_fetcher():
+def run_binance_fetcher(symbols: list[str] = None):
     """执行一次 Binance 行情同步。"""
     global _binance_first_run
-    symbols = [
-        s.strip().upper()
-        for s in os.getenv("BINANCE_SYMBOLS", "BTCUSDT,ETHUSDT").split(",")
-        if s.strip()
-    ]
+    if not symbols:
+        symbols = [
+            s.strip().upper()
+            for s in os.getenv("BINANCE_SYMBOLS", "BTCUSDT,ETHUSDT").split(",")
+            if s.strip()
+        ]
     intervals = [
         i.strip()
         for i in os.getenv("BINANCE_INTERVALS", "15m,1h,4h").split(",")
@@ -182,17 +183,19 @@ def run_odaily_article_fetcher():
         logger.exception("Odaily 文章同步失败: %s", exc)
 
 
-def run_longform_analysis():
+def run_longform_analysis(assets: list[str] = None):
     """执行一次长文分析并写入缓存。"""
-    assets_env = os.getenv("LONGFORM_ASSETS", "BTCUSDT,ETHUSDT")
-    assets = [a.strip() for a in assets_env.split(",") if a.strip()]
+    if not assets:
+        assets_env = os.getenv("LONGFORM_ASSETS", "BTCUSDT,ETHUSDT")
+        assets = [a.strip() for a in assets_env.split(",") if a.strip()]
+    
     if not assets:
         logger.error("LONGFORM_ASSETS 未配置，跳过长文分析。")
         return
 
     try:
         node = _initialize_longform_node()
-        trade_date = datetime.utcnow().date().isoformat()
+        trade_date = datetime.now(timezone.utc).date().isoformat()
         logger.info("开始运行长文分析师（assets=%s, date=%s）", ",".join(assets), trade_date)
         state = {
             "messages": [
@@ -214,75 +217,139 @@ def run_longform_analysis():
         logger.exception("长文分析执行失败: %s", exc)
 
 
-def is_trading_hours() -> bool:
-    """判断当前是否在纽约交易时段（周一到周五 8:00-20:00）"""
-    now_ny = datetime.now(NY_TZ)
-    # 周一=0, 周日=6
-    is_weekday = now_ny.weekday() < 5
-    is_trading_time = 8 <= now_ny.hour < 20
-    return is_weekday and is_trading_time
+def run_market_monitor():
+    """综合市场监控：检查价格预警 OR 检查是否超时（4小时）。"""
+    store = _get_alert_store()
+    
+    # 1. 检查是否超时（4小时未分析）
+    last_run_iso = store.get_last_round_time()
+    should_run_by_timeout = False
+    
+    if last_run_iso:
+        try:
+            last_run_time = datetime.fromisoformat(last_run_iso)
+            # Ensure timezone awareness compatibility
+            if last_run_time.tzinfo is None:
+                last_run_time = last_run_time.replace(tzinfo=timezone.utc)
+            
+            elapsed_seconds = (datetime.now(timezone.utc) - last_run_time).total_seconds()
+            
+            # 冷却逻辑：如果距离上次分析不足 15 分钟 (900秒)，
+            # 且不是紧急的价格触达（稍后判断），则跳过。
+            is_cooldown = elapsed_seconds < 900
+            
+            # 4小时 = 14400秒
+            if elapsed_seconds >= 14400:
+                should_run_by_timeout = True
+                logger.info(f"触发原因: 超时未分析 (距上次已过 {elapsed_seconds/3600:.1f} 小时)")
+        except Exception as e:
+            logger.warning(f"解析上次运行时间失败: {e}")
+            # 如果解析失败，默认不冷却，也不超时
+            elapsed_seconds = 999999
+            is_cooldown = False
+            pass
+    else:
+        # 无记录视为无需冷却
+        elapsed_seconds = 999999
+        is_cooldown = False
+        logger.info("触发原因: 无历史记录 (首次运行)")
+        should_run_by_timeout = True
+
+    # 2. 检查价格预警 (仅当有活跃监控带时)
+    # The original logic requires iterating over active alerts if we support multiple assets.
+    # Current limitation: get_latest_alert_band returns only ONE latest band.
+    # TODO: Support list_active_alert_bands in the future.
+    
+    band = store.get_latest_alert_band()
+    price_trigger_hit = False
+    reason = None
+    symbol = None
+    price = 0
+    
+    if band:
+        symbol = band.get("asset")
+        alert_low = band.get("alert_low")
+        alert_high = band.get("alert_high")
+        
+        if symbol and (alert_low is not None or alert_high is not None):
+            try:
+                price = get_service().get_mark_price(symbol)
+                if price > 0:
+                    threshold_pct = float(os.getenv("PRICE_ALERT_THRESHOLD_PCT", "0.002"))
+                    
+                    reached_low = alert_low is not None and price <= float(alert_low)
+                    reached_high = alert_high is not None and price >= float(alert_high)
+                    
+                    # 只有真正触及止损/止盈（Hit）才允许突破冷却时间
+                    if reached_low or reached_high:
+                        price_trigger_hit = True
+                    # 如果只是“接近” (Near)，则必须遵守冷却时间
+                    elif not is_cooldown:
+                        near_low = False
+                        near_high = False
+                        if alert_low:
+                            near_low = abs(price - float(alert_low)) / float(alert_low) <= threshold_pct
+                        if alert_high:
+                            near_high = abs(price - float(alert_high)) / float(alert_high) <= threshold_pct
+                        
+                        if near_low or near_high:
+                             price_trigger_hit = True
+                             # 标记原因
+                             # ... logic below handles reason string ...
+                    
+                    if price_trigger_hit:
+                        # Determine reason
+                        open_entry = store.get_latest_open_entry(symbol)
+                        side = "LONG"
+                        if open_entry and open_entry.get("decision") == "SHORT":
+                            side = "SHORT"
+                            
+                        if side == "LONG":
+                            if reached_low: reason = "stop_loss_hit"
+                            elif reached_high: reason = "take_profit_hit"
+                            elif is_cooldown: pass # Should not happen if logic is correct
+                            else: reason = "near_stop_loss" if near_low else "near_take_profit"
+                        else:
+                            if reached_low: reason = "take_profit_hit"
+                            elif reached_high: reason = "stop_loss_hit"
+                            elif is_cooldown: pass
+                            else: reason = "near_take_profit" if near_low else "near_stop_loss"
+                            
+                        if reason:
+                            logger.info(
+                                "价格预警触发: %s (%s) 现价=%s alert_low=%s alert_high=%s reason=%s",
+                                symbol, side, price, alert_low, alert_high, reason
+                            )
+            except Exception as exc:
+                logger.warning(f"检查价格预警失败 {symbol}: {exc}")
+
+    # 3. 综合判断是否触发分析
+    # 如果处于冷却期，且没有发生"硬触达"(Hit)，则不运行。
+    if is_cooldown and not (price_trigger_hit and reason in {"stop_loss_hit", "take_profit_hit"}):
+        return
+
+    should_run = should_run_by_timeout or price_trigger_hit
+
+    
+    if should_run:
+        trigger_reason = f"timeout={should_run_by_timeout}, price_alert={reason}"
+        logger.info(f"触发交易分析: {trigger_reason}")
+        run_analysis()
+        
+        # 更新最后触发状态，避免短时间内重复触发
+        if symbol and price > 0:
+             store.set_alert_state(symbol, datetime.now(timezone.utc).isoformat(), reason or "timeout", price)
 
 
-def main():
-    """主函数 - 启动调度器"""
-    logger.info("启动定时触发器...")
-    logger.info(f"当前纽约时间: {datetime.now(NY_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # 预初始化交易图
-    init_trading_graph()
-    
-    scheduler = BlockingScheduler(timezone=NY_TZ)
-    
-    # 交易时段：周一到周五 8:00-19:45，每15分钟
-    # (8:00, 8:15, 8:30, ..., 19:45)
-    scheduler.add_job(
-        run_analysis,
-        CronTrigger(
-            day_of_week="mon-fri",
-            hour="8-19",
-            minute="0,15,30,45",
-            timezone=NY_TZ,
-        ),
-        id="trading_hours_job",
-        name="交易时段分析 (每15分钟)",
-        replace_existing=True,
-    )
-    
-    # 非交易时段：
-    # 1. 周一到周五 0:00-7:00 和 20:00-23:00，每小时整点
-    scheduler.add_job(
-        run_analysis,
-        CronTrigger(
-            day_of_week="mon-fri",
-            hour="0-7,20-23",
-            minute="0",
-            timezone=NY_TZ,
-        ),
-        id="off_hours_weekday_job",
-        name="工作日非交易时段分析 (每小时)",
-        replace_existing=True,
-    )
-    
-    # 2. 周末全天，每小时整点
-    scheduler.add_job(
-        run_analysis,
-        CronTrigger(
-            day_of_week="sat,sun",
-            hour="*",
-            minute="0",
-            timezone=NY_TZ,
-        ),
-        id="weekend_job",
-        name="周末分析 (每小时)",
-        replace_existing=True,
-    )
+
+def configure_scheduler(scheduler):
+    """配置调度器任务 - 供 main 和 server.py 复用"""
     
     # Binance 行情同步（默认 900 秒）
     scheduler.add_job(
         run_binance_fetcher,
         IntervalTrigger(
             seconds=int(os.getenv("BINANCE_SYNC_INTERVAL", "900")),
-            timezone=NY_TZ,
         ),
         id="binance_fetcher_job",
         name="Binance 行情同步",
@@ -294,7 +361,6 @@ def main():
         run_odaily_newsflash_fetcher,
         IntervalTrigger(
             seconds=int(os.getenv("ODAILY_NEWSFLASH_INTERVAL", "900")),
-            timezone=NY_TZ,
         ),
         id="odaily_newsflash_job",
         name="Odaily 快讯同步",
@@ -304,7 +370,6 @@ def main():
         run_odaily_article_fetcher,
         IntervalTrigger(
             seconds=int(os.getenv("ODAILY_ARTICLE_INTERVAL", "3600")),
-            timezone=NY_TZ,
         ),
         id="odaily_article_job",
         name="Odaily 文章同步",
@@ -316,12 +381,49 @@ def main():
         run_longform_analysis,
         IntervalTrigger(
             seconds=int(os.getenv("LONGFORM_RUN_INTERVAL", "86400")),
-            timezone=NY_TZ,
         ),
         id="longform_analysis_job",
         name="长文分析",
         replace_existing=True,
     )
+
+    # 改为 unified market monitor (每 60 秒运行一次)
+    scheduler.add_job(
+        run_market_monitor,
+        IntervalTrigger(seconds=60),
+        id="market_monitor_job",
+        name="市场监控 (价格/超时)",
+        replace_existing=True,
+    )
+    
+    # REMOVED: analysis_job (5 min interval)
+
+
+def execute_startup_tasks():
+    """执行启动时的初始化任务 - 供 main 和 server.py 复用"""
+    logger.info("执行启动初始化任务...")
+    run_binance_fetcher()
+    run_odaily_newsflash_fetcher()
+    run_odaily_article_fetcher()
+    run_longform_analysis()
+    run_analysis()
+    # 启动时不直接跑 monitor，因为 run_analysis 已经跑过了，
+    # 且 monitor 依赖时间差，刚跑完肯定不会触发超时。
+    # 至于价格预警，刚开仓也不太可能立刻触发。
+    # 不过为了保险起见，或者为了更新 alert state，可以跑一次。
+    # run_market_monitor() 
+
+
+
+def main():
+    """主函数 - 启动调度器"""
+    logger.info("启动定时触发器...")
+    
+    # 预初始化交易图
+    init_trading_graph()
+    
+    scheduler = BlockingScheduler()
+    configure_scheduler(scheduler)
     
     # 打印所有任务
     logger.info("已配置的定时任务:")
@@ -329,12 +431,7 @@ def main():
         logger.info(f"  - {job.name}: {job.trigger}")
     
     # 启动时立即执行一次
-    logger.info("启动时执行一次分析...")
-    run_analysis()
-    run_binance_fetcher()
-    run_odaily_newsflash_fetcher()
-    run_odaily_article_fetcher()
-    run_longform_analysis()
+    execute_startup_tasks()
     
     logger.info("调度器开始运行，按 Ctrl+C 停止")
     try:

@@ -32,7 +32,36 @@ class TraderRoundMemoryStore:
                     summary TEXT NOT NULL,
                     decision TEXT,
                     asset TEXT,
-                    is_open_entry INTEGER DEFAULT 0
+                    is_open_entry INTEGER DEFAULT 0,
+                    alert_low REAL,
+                    alert_high REAL,
+                    entry_price REAL,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    leverage INTEGER
+                )
+                """
+            )
+            self._ensure_columns(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS price_alert_state (
+                    symbol TEXT PRIMARY KEY,
+                    last_trigger_at TEXT,
+                    last_reason TEXT,
+                    last_price REAL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS position_watch_state (
+                    symbol TEXT PRIMARY KEY,
+                    position_amt REAL,
+                    entry_price REAL,
+                    side TEXT,
+                    opened_at TEXT,
+                    last_seen_at TEXT
                 )
                 """
             )
@@ -47,6 +76,21 @@ class TraderRoundMemoryStore:
             )
             conn.commit()
 
+    def _ensure_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(trader_rounds)")}
+        if "alert_low" not in existing:
+            conn.execute("ALTER TABLE trader_rounds ADD COLUMN alert_low REAL")
+        if "alert_high" not in existing:
+            conn.execute("ALTER TABLE trader_rounds ADD COLUMN alert_high REAL")
+        if "entry_price" not in existing:
+            conn.execute("ALTER TABLE trader_rounds ADD COLUMN entry_price REAL")
+        if "stop_loss" not in existing:
+            conn.execute("ALTER TABLE trader_rounds ADD COLUMN stop_loss REAL")
+        if "take_profit" not in existing:
+            conn.execute("ALTER TABLE trader_rounds ADD COLUMN take_profit REAL")
+        if "leverage" not in existing:
+            conn.execute("ALTER TABLE trader_rounds ADD COLUMN leverage INTEGER")
+
     def add_round(
         self,
         summary: str,
@@ -56,6 +100,12 @@ class TraderRoundMemoryStore:
         decision: Optional[str] = None,
         asset: Optional[str] = None,
         is_open_entry: bool = False,
+        alert_low: Optional[float] = None,
+        alert_high: Optional[float] = None,
+        entry_price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        take_profit: Optional[float] = None,
+        leverage: Optional[int] = None,
         created_at: Optional[str] = None,
     ) -> None:
         created_at = created_at or _utcnow_iso()
@@ -65,9 +115,10 @@ class TraderRoundMemoryStore:
                 """
                 INSERT INTO trader_rounds (
                     created_at, round_id, assets, situation, summary,
-                    decision, asset, is_open_entry
+                    decision, asset, is_open_entry, alert_low, alert_high,
+                    entry_price, stop_loss, take_profit, leverage
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -78,9 +129,27 @@ class TraderRoundMemoryStore:
                     decision,
                     asset,
                     1 if is_open_entry else 0,
+                    alert_low,
+                    alert_high,
+                    entry_price,
+                    stop_loss,
+                    take_profit,
+                    leverage,
                 ),
             )
             conn.commit()
+
+    def get_last_round_time(self) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT created_at FROM trader_rounds
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return row["created_at"] if row else None
 
     def get_recent_rounds(self, limit: int = 2) -> List[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
@@ -115,6 +184,132 @@ class TraderRoundMemoryStore:
                 """
             ).fetchone()
         return dict(row) if row else None
+
+    def get_latest_open_entry(self, asset: str) -> Optional[Dict[str, Any]]:
+        if not asset:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT *
+                FROM trader_rounds
+                WHERE asset = ?
+                  AND decision IN ('LONG', 'SHORT')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (asset,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_alert_band(self) -> Optional[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT *
+                FROM trader_rounds
+                WHERE decision IN ('LONG', 'SHORT')
+                  AND (alert_low IS NOT NULL OR alert_high IS NOT NULL)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_alert_state(self, symbol: str) -> Optional[Dict[str, Any]]:
+        if not symbol:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM price_alert_state WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_alert_state(
+        self, symbol: str, last_trigger_at: str, last_reason: str, last_price: float
+    ) -> None:
+        if not symbol:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO price_alert_state (symbol, last_trigger_at, last_reason, last_price)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    last_trigger_at=excluded.last_trigger_at,
+                    last_reason=excluded.last_reason,
+                    last_price=excluded.last_price
+                """,
+                (symbol, last_trigger_at, last_reason, last_price),
+            )
+            conn.commit()
+
+    def get_position_state(self, symbol: str) -> Optional[Dict[str, Any]]:
+        if not symbol:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM position_watch_state WHERE symbol = ?",
+                (symbol,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_position_state(
+        self,
+        symbol: str,
+        position_amt: float,
+        entry_price: float,
+        side: str,
+        opened_at: str,
+        last_seen_at: str,
+    ) -> None:
+        if not symbol:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO position_watch_state (
+                    symbol, position_amt, entry_price, side, opened_at, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    position_amt=excluded.position_amt,
+                    entry_price=excluded.entry_price,
+                    side=excluded.side,
+                    opened_at=excluded.opened_at,
+                    last_seen_at=excluded.last_seen_at
+                """,
+                (
+                    symbol,
+                    position_amt,
+                    entry_price,
+                    side,
+                    opened_at,
+                    last_seen_at,
+                ),
+            )
+            conn.commit()
+
+    def delete_position_state(self, symbol: str) -> None:
+        if not symbol:
+            return
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "DELETE FROM position_watch_state WHERE symbol = ?",
+                (symbol,),
+            )
+            conn.commit()
+
+    def list_position_states(self) -> List[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM position_watch_state").fetchall()
+        return [dict(row) for row in rows]
 
     def prune_recent(self, keep_n: int = 100) -> None:
         if keep_n <= 0:

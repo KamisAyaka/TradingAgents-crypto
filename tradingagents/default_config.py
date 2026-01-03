@@ -4,22 +4,25 @@ DEFAULT_CONFIG = {
     "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
     "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"),
     # LLM settings
-    "llm_provider": "google",
-    "quick_llm_provider": None,
-    "deep_llm_provider": None,
-    "deep_think_llm": "gemini-2.0-flash-lite",
-    "quick_think_llm": "gemini-2.0-flash-lite",
-    "backend_url": "https://generativelanguage.googleapis.com/v1",
-    "quick_backend_url": None,
-    "deep_backend_url": None,
+    "llm_provider": "openai",
+    "quick_llm_provider": "openai",
+    "deep_llm_provider": "openai",
+    "deep_think_llm": "Qwen/Qwen2.5-7B-Instruct",
+    "quick_think_llm": "Qwen/Qwen2.5-7B-Instruct",
+    "backend_url": "https://api-inference.modelscope.cn/v1/",
+    "quick_backend_url": "https://api-inference.modelscope.cn/v1/",
+    "deep_backend_url": "https://api-inference.modelscope.cn/v1/",
     "longform_llm_provider": "dashscope",
-    "longform_llm_model": "qwen-plus",
+    "longform_llm_model": "qwen-turbo",
     # Memory settings
     "use_chroma_memory": True,
-    "chroma_path": os.path.join(os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"), "chroma_store"),
+    "chroma_path": os.path.join(
+        os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"),
+        "chroma_store",
+    ),
     # Trading constraints
-    "min_leverage": 1,
-    "max_leverage": 3,
+    "min_leverage": 5,
+    "max_leverage": 10,
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_recur_limit": 100,
@@ -30,5 +33,9 @@ DEFAULT_CONFIG = {
     "trader_round_db_path": os.path.join(
         os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"),
         "trader_round_memory.db",
+    ),
+    "trace_db_path": os.path.join(
+        os.getenv("TRADINGAGENTS_RESULTS_DIR", "./results"),
+        "trace_store.db",
     ),
 }

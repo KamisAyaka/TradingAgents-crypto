@@ -4,10 +4,12 @@ env/
 __pycache__/
 .DS_Store
 *.csv
-src/
+/src/
 eval_results/
 eval_data/
 *.egg-info/
 .env
 tradingagents/data/
 .langgraph_api/
+
+web/node_modules/

@@ -18,3 +18,5 @@ TA-Lib
 binance-connector
 binance-sdk-derivatives-trading-usds-futures
 apscheduler
+fastapi
+uvicorn
