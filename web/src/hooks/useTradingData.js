@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { toNumber } from '../utils/number.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 const fallbackTrace = [
   {
