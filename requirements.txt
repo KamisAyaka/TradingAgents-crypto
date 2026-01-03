@@ -16,6 +16,7 @@ typer
 python-dotenv
 TA-Lib
 binance-connector
+binance-common
 binance-sdk-derivatives-trading-usds-futures
 apscheduler
 fastapi
