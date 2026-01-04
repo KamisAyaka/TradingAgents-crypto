@@ -65,6 +65,23 @@ function FocusPage({
     }
   }
 
+  // 3. Determine Active Execution & Risk Data (Override default props if active asset found)
+  let activeExecution = execution
+  let activeRisk = risk
+
+  if (perAssetDecisions.length > 0) {
+    // Find the first interesting decision (LONG/SHORT/CLOSE)
+    const activeDecision = perAssetDecisions.find(d => {
+      const s = (d.decision || '').toUpperCase()
+      return s === 'LONG' || s === 'SHORT' || s.includes('CLOSE')
+    })
+
+    if (activeDecision) {
+      if (activeDecision.execution) activeExecution = activeDecision.execution
+      if (activeDecision.risk_management) activeRisk = activeDecision.risk_management
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background pt-20 pb-8 px-4 sm:px-6 lg:px-8">
       <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -107,17 +124,18 @@ function FocusPage({
                 <TrendingUp size={14} /> Entry
               </div>
               <div className="text-2xl font-bold font-heading font-mono-numbers text-slate-200">
-                {execution.entry_price || '—'}
+                {activeExecution.entry_price || '—'}
               </div>
-              <div className="text-xs text-slate-500 font-mono font-mono-numbers">{execution.entry_range || '未设置区间'}</div>
+              <div className="text-xs text-slate-500 font-mono font-mono-numbers">{activeExecution.entry_range || '未设置区间'}</div>
             </Card>
+
 
             <Card className="p-4 flex flex-col gap-2 group hover:border-danger/50 transition-colors">
               <div className="flex items-center gap-2 text-slate-400 text-xs font-bold uppercase tracking-wider">
                 <ShieldAlert size={14} /> Stop Loss
               </div>
               <div className="text-2xl font-bold font-heading text-danger font-mono-numbers">
-                {risk.stop_loss_price || '—'}
+                {activeRisk.stop_loss_price || '—'}
               </div>
               <div className="text-xs text-slate-500">Risk Cap Enabled</div>
             </Card>
@@ -127,9 +145,9 @@ function FocusPage({
                 <CheckCircle size={14} /> Target
               </div>
               <div className="text-2xl font-bold font-heading text-success truncate font-mono-numbers">
-                {(Array.isArray(risk.take_profit_targets)
-                  ? risk.take_profit_targets.join(' / ')
-                  : risk.take_profit_targets) || '—'}
+                {(Array.isArray(activeRisk.take_profit_targets)
+                  ? activeRisk.take_profit_targets.join(' / ')
+                  : activeRisk.take_profit_targets) || '—'}
               </div>
               <div className="text-xs text-slate-500">Take Profit</div>
             </Card>
