@@ -55,14 +55,11 @@ class ExecutionManager:
             execution = decision.get("execution") or {}
             risk = decision.get("risk_management") or {}
             asset = str(decision.get("asset") or "")
-            entry_price = self._safe_mark_price(asset) if asset else None
-            if entry_price is not None:
-                execution["entry_price"] = entry_price
-                decision["execution"] = execution
+            entry_price_for_risk = self._safe_mark_price(asset) if asset else None
             leverage = self._coerce_int(execution.get("leverage"))
             stop_loss_price = self._coerce_float(risk.get("stop_loss_price"))
 
-            if entry_price is None or leverage is None or leverage <= 0:
+            if entry_price_for_risk is None or leverage is None or leverage <= 0:
                 warnings.append(
                     f"{decision.get('asset')}: 缺少 entry_price 或 leverage，无法校验 10% 规则。"
                 )
@@ -73,14 +70,14 @@ class ExecutionManager:
                 )
                 continue
 
-            distance_pct = abs(stop_loss_price - entry_price) / entry_price
+            distance_pct = abs(stop_loss_price - entry_price_for_risk) / entry_price_for_risk
             leveraged_loss = distance_pct * leverage
             if leveraged_loss > 0.10:
                 allowed_distance = 0.10 / leverage
                 if action == "LONG":
-                    adjusted_stop = entry_price * (1 - allowed_distance)
+                    adjusted_stop = entry_price_for_risk * (1 - allowed_distance)
                 else:
-                    adjusted_stop = entry_price * (1 + allowed_distance)
+                    adjusted_stop = entry_price_for_risk * (1 + allowed_distance)
                 risk["stop_loss_price"] = round(adjusted_stop, 8)
                 decision["risk_management"] = risk
                 adjustments.append(
@@ -167,11 +164,15 @@ class ExecutionManager:
                 has_position = False
                 is_same_direction = False
                 
+                entry_price_from_position = None
                 try:
                     positions = get_service().get_positions([asset])
                     if positions:
                         pos = positions[0]
                         current_position_amt = float(pos.get("positionAmt", 0.0))
+                        entry_price_from_position = self._coerce_float(
+                            pos.get("entryPrice")
+                        )
                         if abs(current_position_amt) > 0:
                             has_position = True
                             # check direction
@@ -187,6 +188,10 @@ class ExecutionManager:
                 # 2. 如果已持仓且方向一致，直接跳过 (Hold)
                 # 3. 如果已持仓但方向不一致（反向），则报警（还是只平仓？简单起见，提示反向持仓需人工干预或等待平仓信号）
                 
+                if has_position and entry_price_from_position:
+                    execution["entry_price"] = entry_price_from_position
+                    decision["execution"] = execution
+
                 if has_position:
                     if is_same_direction:
                         entry_result = f"已持有 {asset} {exec_action} 仓位 ({current_position_amt})，保持不动 (No Rebalance)。"
@@ -198,6 +203,18 @@ class ExecutionManager:
                     entry_result = open_binance_position_usdt.invoke(
                         {"symbol": asset, "side": side, "notional_usdt": target_notional}
                     )
+                    try:
+                        positions = get_service().get_positions([asset])
+                        if positions:
+                            pos = positions[0]
+                            entry_price_from_position = self._coerce_float(
+                                pos.get("entryPrice")
+                            )
+                            if entry_price_from_position:
+                                execution["entry_price"] = entry_price_from_position
+                                decision["execution"] = execution
+                    except Exception:
+                        pass
                
                 existing_stop_loss = None
                 existing_take_profit = None
