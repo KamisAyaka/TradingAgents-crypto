@@ -125,7 +125,7 @@ class PersistenceManager:
     def build_trade_info_from_open_entry(
         self, symbol: str, action: str, price: Optional[float]
     ) -> Optional[Dict[str, Any]]:
-        entry = self.trader_round_store.get_latest_open_entry(symbol)
+        entry = self.trader_round_store.get_first_open_entry_since_close(symbol)
         if not entry:
             return None
         side = "LONG" if entry.get("decision") == "LONG" else "SHORT"

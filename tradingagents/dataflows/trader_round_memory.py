@@ -181,6 +181,33 @@ class TraderRoundMemoryStore:
             ).fetchone()
         return dict(row) if row else None
 
+    def get_first_open_entry_since_close(self, asset: str) -> Optional[Dict[str, Any]]:
+        if not asset:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT *
+                FROM trader_rounds
+                WHERE asset = ?
+                  AND decision IN ('LONG', 'SHORT')
+                  AND created_at > COALESCE(
+                      (
+                          SELECT MAX(created_at)
+                          FROM trader_rounds
+                          WHERE asset = ?
+                            AND decision IN ('CLOSE_LONG', 'CLOSE_SHORT')
+                      ),
+                      ''
+                  )
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """,
+                (asset, asset),
+            ).fetchone()
+        return dict(row) if row else None
+
     def get_latest_alert_band(self) -> Optional[Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row

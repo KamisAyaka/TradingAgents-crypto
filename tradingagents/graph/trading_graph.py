@@ -339,7 +339,7 @@ class TradingAgentsGraph:
         state_snapshot = dict(self.curr_state or {})
         symbol = trade_info.get("symbol") or ""
         if symbol:
-            open_entry = self.trader_round_store.get_latest_open_entry(symbol)
+            open_entry = self.trader_round_store.get_first_open_entry_since_close(symbol)
             if open_entry:
                 state_snapshot["open_position_context"] = (
                     f"{open_entry.get('summary')}\n\n{open_entry.get('situation')}"
