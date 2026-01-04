@@ -32,36 +32,52 @@ function FocusPage({
     displayAsset = plan.asset.replace('USDT', '')
   }
 
-  // 2. Determine Aggregated Decision
+  // 2. Determine Aggregated Decision & Filtered Assets
   let aggregatedDecision = (plan.decision || 'WAIT').toUpperCase()
   const perAssetDecisions = finalDecisionObj.trader_plan?.per_asset_decisions || []
   let decisionReason = plan.thesis || '暂无交易观点'
+  let specificAssets = [] // Assets that match the aggregated decision
 
   if (perAssetDecisions.length > 0) {
     const actions = new Set()
     const reasons = []
+
     perAssetDecisions.forEach(d => {
       const dVal = (d.decision || 'WAIT').toUpperCase()
       actions.add(dVal)
+      if (dVal !== 'WAIT') {
+        specificAssets.push(d.asset.replace('USDT', ''))
+      }
       if (d.thesis) reasons.push(`${d.asset}: ${d.thesis}`)
     })
 
     // Prioritize active actions over WAIT
-    if (actions.has('LONG') && actions.has('SHORT')) aggregatedDecision = 'MIXED'
-    else if (actions.has('LONG')) aggregatedDecision = 'LONG'
-    else if (actions.has('SHORT')) aggregatedDecision = 'SHORT'
-    else if (actions.size === 1) aggregatedDecision = Array.from(actions)[0]
-    else {
-      // Filter out WAIT
+    if (actions.has('LONG') && actions.has('SHORT')) {
+      aggregatedDecision = 'MIXED'
+      displayAsset = assetList.map(a => a.replace('USDT', '')).join(', ')
+    } else if (actions.has('LONG')) {
+      aggregatedDecision = 'LONG'
+      displayAsset = specificAssets.join(', ') || displayAsset
+    } else if (actions.has('SHORT')) {
+      aggregatedDecision = 'SHORT'
+      displayAsset = specificAssets.join(', ') || displayAsset
+    } else if (actions.size === 1) {
+      aggregatedDecision = Array.from(actions)[0]
+    } else {
       const activeActions = Array.from(actions).filter(a => a !== 'WAIT')
-      if (activeActions.length === 1) aggregatedDecision = activeActions[0]
-      else if (activeActions.length > 1) aggregatedDecision = 'MIXED'
-      else aggregatedDecision = 'WAIT'
+      if (activeActions.length === 1) {
+        aggregatedDecision = activeActions[0]
+        displayAsset = specificAssets.join(', ') || displayAsset
+      } else if (activeActions.length > 1) {
+        aggregatedDecision = 'MIXED'
+        displayAsset = assetList.map(a => a.replace('USDT', '')).join(', ')
+      } else {
+        aggregatedDecision = 'WAIT'
+      }
     }
 
-    // Improve thesis display if multi-asset
     if (reasons.length > 0 && assetList.length > 1) {
-      decisionReason = reasons[0] // Just show first one for now or maybe keep generic
+      decisionReason = reasons[0]
     }
   }
 
@@ -79,6 +95,17 @@ function FocusPage({
     if (activeDecision) {
       if (activeDecision.execution) activeExecution = activeDecision.execution
       if (activeDecision.risk_management) activeRisk = activeDecision.risk_management
+    }
+  }
+
+  // 4. Fallback: Parse Entry Price from Position Summary if missing
+  // (Handles cases where agent says "Hold" and doesn't output entry_price JSON)
+  if (!activeExecution.entry_price) {
+    const posSummary = finalDecisionObj.trader_plan?.current_positions_summary || ''
+    // Match patterns including "均价 3000", "Avg 3000", "entry: 3000" etc.
+    const match = posSummary.match(/(?:均价|Avg Price|Entry|Cost)\s*[:：]?\s*(\d+(?:\.\d+)?)/i)
+    if (match && match[1]) {
+      activeExecution = { ...activeExecution, entry_price: match[1], entry_range: '(Holding)' }
     }
   }
 
