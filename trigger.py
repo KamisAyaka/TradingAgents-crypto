@@ -3,6 +3,7 @@
 import logging
 import os
 from datetime import datetime, timezone
+from typing import Optional
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -73,12 +74,9 @@ def init_trading_graph():
     return ta
 
 
-def run_analysis():
-    """执行一次交易分析"""
-    logger.info(f"========== 开始分析 ==========")
-
 # 全局锁，防止分析任务并发执行
 _is_analysis_running = False
+
 
 def run_analysis():
     """执行 AI 交易分析逻辑"""
@@ -132,7 +130,7 @@ def _initialize_longform_node():
     primary_key = os.getenv("OPENAI_API_KEY")
     if not primary_key:
         raise ValueError("OPENAI_API_KEY 未设置，无法运行长文分析师。")
-    fallback_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_FALLBACK_API_KEY")
+    fallback_key = os.getenv("DEEPSEEK_API_KEY")
     if not fallback_key:
         fallback_key = primary_key
 
@@ -154,7 +152,7 @@ def _initialize_longform_node():
     return _longform_node
 
 
-def run_binance_fetcher(symbols: list[str] = None):
+def run_binance_fetcher(symbols: list[str] | None = None):
     """执行一次 Binance 行情同步。"""
     global _binance_first_run
     if not symbols:
@@ -211,7 +209,7 @@ def run_odaily_article_fetcher():
         logger.exception("Odaily 文章同步失败: %s", exc)
 
 
-def run_longform_analysis(assets: list[str] = None):
+def run_longform_analysis(assets: list[str] | None = None):
     """执行一次长文分析并写入缓存。"""
     if not assets:
         assets_env = os.getenv("LONGFORM_ASSETS", "BTCUSDT,ETHUSDT")
@@ -274,128 +272,164 @@ def run_longform_analysis(assets: list[str] = None):
         logger.exception("长文分析执行失败: %s", exc)
 
 
-def run_market_monitor():
-    """综合市场监控：检查价格预警 OR 检查是否超时（4小时）。"""
-    store = _get_alert_store()
-    
-    # 1. 检查是否超时（4小时未分析）
+def _check_timeout_trigger(store: TraderRoundMemoryStore) -> tuple[bool, bool]:
+    """检查是否需要因超时触发分析，并返回是否处于冷却期。"""
     last_run_iso = store.get_last_round_time()
     should_run_by_timeout = False
-    
+    is_cooldown = False
+
     if last_run_iso:
         try:
             last_run_time = datetime.fromisoformat(last_run_iso)
             # Ensure timezone awareness compatibility
             if last_run_time.tzinfo is None:
                 last_run_time = last_run_time.replace(tzinfo=timezone.utc)
-            
+
             elapsed_seconds = (datetime.now(timezone.utc) - last_run_time).total_seconds()
-            
-            # 冷却逻辑：如果距离上次分析不足 15 分钟 (900秒)，
-            # 且不是紧急的价格触达（稍后判断），则跳过。
+
+            # 冷却逻辑：如果距离上次分析不足 15 分钟 (900秒)，则视为冷却中
             is_cooldown = elapsed_seconds < 900
-            
+
             # 4小时 = 14400秒
             if elapsed_seconds >= 14400:
                 should_run_by_timeout = True
-                logger.info(f"触发原因: 超时未分析 (距上次已过 {elapsed_seconds/3600:.1f} 小时)")
+                logger.info(
+                    "触发原因: 超时未分析 (距上次已过 %.1f 小时)",
+                    elapsed_seconds / 3600,
+                )
         except Exception as e:
-            logger.warning(f"解析上次运行时间失败: {e}")
+            logger.warning("解析上次运行时间失败: %s", e)
             # 如果解析失败，默认不冷却，也不超时
-            elapsed_seconds = 999999
             is_cooldown = False
-            pass
     else:
         # 无记录视为无需冷却
-        elapsed_seconds = 999999
         is_cooldown = False
         logger.info("触发原因: 无历史记录 (首次运行)")
         should_run_by_timeout = True
 
-    # 2. 检查价格预警 (仅当有活跃监控带时)
+    return should_run_by_timeout, is_cooldown
+
+
+def _check_price_alert(
+    store: TraderRoundMemoryStore,
+) -> tuple[bool, Optional[str], Optional[str], float]:
+    """检查价格预警触发情况。"""
     # The original logic requires iterating over active alerts if we support multiple assets.
     # Current limitation: get_latest_alert_band returns only ONE latest band.
     # TODO: Support list_active_alert_bands in the future.
-    
+
     band = store.get_latest_alert_band()
     price_trigger_hit = False
     reason = None
     symbol = None
     price = 0
-    
+    near_low = False
+    near_high = False
+    reached_low = False
+    reached_high = False
+
     if band:
         symbol = band.get("asset")
-        alert_low = band.get("alert_low")
-        alert_high = band.get("alert_high")
-        
-        if symbol and (alert_low is not None or alert_high is not None):
+        stop_loss = band.get("stop_loss")
+        take_profit = band.get("take_profit")
+
+        if symbol and (stop_loss is not None or take_profit is not None):
             try:
                 price = get_service().get_mark_price(symbol)
                 if price > 0:
                     threshold_pct = float(os.getenv("PRICE_ALERT_THRESHOLD_PCT", "0.002"))
-                    
-                    reached_low = alert_low is not None and price <= float(alert_low)
-                    reached_high = alert_high is not None and price >= float(alert_high)
-                    
-                    # 只有真正触及止损/止盈（Hit）才允许突破冷却时间
+
+                    reached_low = stop_loss is not None and price <= float(stop_loss)
+                    reached_high = take_profit is not None and price >= float(take_profit)
+
                     if reached_low or reached_high:
                         price_trigger_hit = True
-                    # 如果只是“接近” (Near)，则必须遵守冷却时间
-                    elif not is_cooldown:
-                        near_low = False
-                        near_high = False
-                        if alert_low:
-                            near_low = abs(price - float(alert_low)) / float(alert_low) <= threshold_pct
-                        if alert_high:
-                            near_high = abs(price - float(alert_high)) / float(alert_high) <= threshold_pct
-                        
+                    else:
+                        if stop_loss:
+                            near_low = (
+                                abs(price - float(stop_loss)) / float(stop_loss)
+                                <= threshold_pct
+                            )
+                        if take_profit:
+                            near_high = (
+                                abs(price - float(take_profit)) / float(take_profit)
+                                <= threshold_pct
+                            )
+
                         if near_low or near_high:
-                             price_trigger_hit = True
-                             # 标记原因
-                             # ... logic below handles reason string ...
-                    
+                            price_trigger_hit = True
+                            # 标记原因
+                            # ... logic below handles reason string ...
+
                     if price_trigger_hit:
                         # Determine reason
                         open_entry = store.get_latest_open_entry(symbol)
                         side = "LONG"
                         if open_entry and open_entry.get("decision") == "SHORT":
                             side = "SHORT"
-                            
+
                         if side == "LONG":
-                            if reached_low: reason = "stop_loss_hit"
-                            elif reached_high: reason = "take_profit_hit"
-                            elif is_cooldown: pass # Should not happen if logic is correct
-                            else: reason = "near_stop_loss" if near_low else "near_take_profit"
+                            if reached_low:
+                                reason = "stop_loss_hit"
+                            elif reached_high:
+                                reason = "take_profit_hit"
+                            else:
+                                reason = (
+                                    "near_stop_loss" if near_low else "near_take_profit"
+                                )
                         else:
-                            if reached_low: reason = "take_profit_hit"
-                            elif reached_high: reason = "stop_loss_hit"
-                            elif is_cooldown: pass
-                            else: reason = "near_take_profit" if near_low else "near_stop_loss"
-                            
+                            if reached_low:
+                                reason = "take_profit_hit"
+                            elif reached_high:
+                                reason = "stop_loss_hit"
+                            else:
+                                reason = (
+                                    "near_take_profit" if near_low else "near_stop_loss"
+                                )
+
                         if reason:
                             logger.info(
-                                "价格预警触发: %s (%s) 现价=%s alert_low=%s alert_high=%s reason=%s",
-                                symbol, side, price, alert_low, alert_high, reason
+                                "价格预警触发: %s (%s) 现价=%s stop_loss=%s take_profit=%s reason=%s",
+                                symbol,
+                                side,
+                                price,
+                                stop_loss,
+                                take_profit,
+                                reason,
                             )
             except Exception as exc:
-                logger.warning(f"检查价格预警失败 {symbol}: {exc}")
+                logger.warning("检查价格预警失败 %s: %s", symbol, exc)
+
+    return price_trigger_hit, reason, symbol, price
+
+
+def run_market_monitor():
+    """综合市场监控：检查价格预警 OR 检查是否超时（4小时）。"""
+    store = _get_alert_store()
+
+    # 1. 检查是否超时（4小时未分析）
+    should_run_by_timeout, is_cooldown = _check_timeout_trigger(store)
+
+    # 2. 检查价格预警
+    price_trigger_hit, reason, symbol, price = _check_price_alert(store)
 
     # 3. 综合判断是否触发分析
-    # 如果处于冷却期，且没有发生"硬触达"(Hit)，则不运行。
-    if is_cooldown and not (price_trigger_hit and reason in {"stop_loss_hit", "take_profit_hit"}):
+    # 冷却期内不触发分析。
+    if is_cooldown:
         return
 
     should_run = should_run_by_timeout or price_trigger_hit
 
-    
     if should_run:
         trigger_reason = f"timeout={should_run_by_timeout}, price_alert={reason}"
         logger.info(f"触发交易分析: {trigger_reason}")
         run_analysis()
-        
+
         # 更新最后触发状态，避免短时间内重复触发
         if symbol and price > 0:
-             store.set_alert_state(symbol, datetime.now(timezone.utc).isoformat(), reason or "timeout", price)
+            store.set_alert_state(
+                symbol, datetime.now(timezone.utc).isoformat(), reason or "timeout", price
+            )
 
 
 
@@ -451,10 +485,7 @@ def configure_scheduler(scheduler):
         id="market_monitor_job",
         name="市场监控 (价格/超时)",
         replace_existing=True,
-        max_instances=3,
     )
-    
-    # REMOVED: analysis_job (5 min interval)
 
 
 def execute_startup_tasks():
@@ -464,9 +495,6 @@ def execute_startup_tasks():
     run_odaily_newsflash_fetcher()
     run_odaily_article_fetcher()
     run_longform_analysis()
-    # 替换直接的 run_analysis() 为 run_market_monitor()
-    # 这样启动时会先检查上次运行时间，避免重启服务导致立即重复交易，
-    # 同时也解决了“首次运行”时 monitor 会自动触发 analysis 的问题，避免双重触发。
     run_market_monitor() 
 
 

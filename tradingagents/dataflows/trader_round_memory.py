@@ -33,8 +33,6 @@ class TraderRoundMemoryStore:
                     decision TEXT,
                     asset TEXT,
                     is_open_entry INTEGER DEFAULT 0,
-                    alert_low REAL,
-                    alert_high REAL,
                     entry_price REAL,
                     stop_loss REAL,
                     take_profit REAL,
@@ -54,18 +52,6 @@ class TraderRoundMemoryStore:
                 """
             )
             conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS position_watch_state (
-                    symbol TEXT PRIMARY KEY,
-                    position_amt REAL,
-                    entry_price REAL,
-                    side TEXT,
-                    opened_at TEXT,
-                    last_seen_at TEXT
-                )
-                """
-            )
-            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_trader_rounds_created_at ON trader_rounds(created_at)"
             )
             conn.execute(
@@ -78,10 +64,6 @@ class TraderRoundMemoryStore:
 
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(trader_rounds)")}
-        if "alert_low" not in existing:
-            conn.execute("ALTER TABLE trader_rounds ADD COLUMN alert_low REAL")
-        if "alert_high" not in existing:
-            conn.execute("ALTER TABLE trader_rounds ADD COLUMN alert_high REAL")
         if "entry_price" not in existing:
             conn.execute("ALTER TABLE trader_rounds ADD COLUMN entry_price REAL")
         if "stop_loss" not in existing:
@@ -100,8 +82,6 @@ class TraderRoundMemoryStore:
         decision: Optional[str] = None,
         asset: Optional[str] = None,
         is_open_entry: bool = False,
-        alert_low: Optional[float] = None,
-        alert_high: Optional[float] = None,
         entry_price: Optional[float] = None,
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
@@ -115,10 +95,10 @@ class TraderRoundMemoryStore:
                 """
                 INSERT INTO trader_rounds (
                     created_at, round_id, assets, situation, summary,
-                    decision, asset, is_open_entry, alert_low, alert_high,
-                    entry_price, stop_loss, take_profit, leverage
+                    decision, asset, is_open_entry, entry_price, stop_loss,
+                    take_profit, leverage
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     created_at,
@@ -129,8 +109,6 @@ class TraderRoundMemoryStore:
                     decision,
                     asset,
                     1 if is_open_entry else 0,
-                    alert_low,
-                    alert_high,
                     entry_price,
                     stop_loss,
                     take_profit,
@@ -211,7 +189,7 @@ class TraderRoundMemoryStore:
                 SELECT *
                 FROM trader_rounds
                 WHERE decision IN ('LONG', 'SHORT')
-                  AND (alert_low IS NOT NULL OR alert_high IS NOT NULL)
+                  AND (stop_loss IS NOT NULL OR take_profit IS NOT NULL)
                 ORDER BY created_at DESC, id DESC
                 LIMIT 1
                 """
@@ -247,69 +225,6 @@ class TraderRoundMemoryStore:
                 (symbol, last_trigger_at, last_reason, last_price),
             )
             conn.commit()
-
-    def get_position_state(self, symbol: str) -> Optional[Dict[str, Any]]:
-        if not symbol:
-            return None
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT * FROM position_watch_state WHERE symbol = ?",
-                (symbol,),
-            ).fetchone()
-        return dict(row) if row else None
-
-    def upsert_position_state(
-        self,
-        symbol: str,
-        position_amt: float,
-        entry_price: float,
-        side: str,
-        opened_at: str,
-        last_seen_at: str,
-    ) -> None:
-        if not symbol:
-            return
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT INTO position_watch_state (
-                    symbol, position_amt, entry_price, side, opened_at, last_seen_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(symbol) DO UPDATE SET
-                    position_amt=excluded.position_amt,
-                    entry_price=excluded.entry_price,
-                    side=excluded.side,
-                    opened_at=excluded.opened_at,
-                    last_seen_at=excluded.last_seen_at
-                """,
-                (
-                    symbol,
-                    position_amt,
-                    entry_price,
-                    side,
-                    opened_at,
-                    last_seen_at,
-                ),
-            )
-            conn.commit()
-
-    def delete_position_state(self, symbol: str) -> None:
-        if not symbol:
-            return
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                "DELETE FROM position_watch_state WHERE symbol = ?",
-                (symbol,),
-            )
-            conn.commit()
-
-    def list_position_states(self) -> List[Dict[str, Any]]:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute("SELECT * FROM position_watch_state").fetchall()
-        return [dict(row) for row in rows]
 
     def prune_recent(self, keep_n: int = 100) -> None:
         if keep_n <= 0:

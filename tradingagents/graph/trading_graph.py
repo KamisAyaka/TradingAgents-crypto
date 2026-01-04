@@ -2,7 +2,6 @@
 # TradingAgents/graph/trading_graph.py
 
 import os
-import json
 import logging
 from datetime import date, datetime, timezone
 from typing import Dict, Any, Optional, cast
@@ -57,21 +56,29 @@ class _FallbackChatModel(BaseChatModel):
         base = self._fallback_base or "<unknown>"
         return f"DeepSeek primary failed: {error}. Falling back to {base}."
 
-    def _generate(self, messages, stop=None, **kwargs):
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         try:
-            return self._primary._generate(messages, stop=stop, **kwargs)
+            return self._primary._generate(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
         except Exception as exc:
             logger = logging.getLogger(__name__)
             logger.warning(self._format_error(exc))
-            return self._fallback._generate(messages, stop=stop, **kwargs)
+            return self._fallback._generate(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
 
-    async def _agenerate(self, messages, stop=None, **kwargs):
+    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):
         try:
-            return await self._primary._agenerate(messages, stop=stop, **kwargs)
+            return await self._primary._agenerate(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
         except Exception as exc:
             logger = logging.getLogger(__name__)
             logger.warning(self._format_error(exc))
-            return await self._fallback._agenerate(messages, stop=stop, **kwargs)
+            return await self._fallback._agenerate(
+                messages, stop=stop, run_manager=run_manager, **kwargs
+            )
 
     def bind_tools(self, tools, **kwargs):
         import openai

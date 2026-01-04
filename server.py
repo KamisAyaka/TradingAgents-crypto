@@ -161,7 +161,9 @@ def get_klines(
             available_intervals = {}
 
         if available_intervals:
-            interval_used = max(available_intervals, key=available_intervals.get)
+            interval_used = max(
+                available_intervals, key=lambda k: available_intervals.get(k, 0)
+            )
             klines = load_cached_klines(symbol, interval_used, limit)
     return {
         "symbol": symbol,

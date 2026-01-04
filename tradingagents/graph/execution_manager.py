@@ -54,7 +54,11 @@ class ExecutionManager:
 
             execution = decision.get("execution") or {}
             risk = decision.get("risk_management") or {}
-            entry_price = self._coerce_float(execution.get("entry_price"))
+            asset = str(decision.get("asset") or "")
+            entry_price = self._safe_mark_price(asset) if asset else None
+            if entry_price is not None:
+                execution["entry_price"] = entry_price
+                decision["execution"] = execution
             leverage = self._coerce_int(execution.get("leverage"))
             stop_loss_price = self._coerce_float(risk.get("stop_loss_price"))
 
@@ -195,8 +199,39 @@ class ExecutionManager:
                         {"symbol": asset, "side": side, "notional_usdt": target_notional}
                     )
                
-                # 止盈止损总是尝试更新（以防用户想修改保护价）
-                if stop_loss_price or take_profit_price:
+                existing_stop_loss = None
+                existing_take_profit = None
+                if has_position:
+                    open_entry = self.trader_round_store.get_latest_open_entry(asset)
+                    if open_entry:
+                        existing_stop_loss = self._coerce_float(
+                            open_entry.get("stop_loss")
+                        )
+                        existing_take_profit = self._coerce_float(
+                            open_entry.get("take_profit")
+                        )
+                    if existing_stop_loss is not None:
+                        stop_loss_price = existing_stop_loss
+                    else:
+                        stop_loss_price = 0.0
+
+                should_update_protection = False
+                if has_position:
+                    if existing_stop_loss is None and take_profit_price:
+                        warnings.append(
+                            f"{asset}: 未找到已有止损，跳过止盈调整以避免修改止损。"
+                        )
+                        should_update_protection = False
+                    else:
+                        should_update_protection = (
+                            take_profit_price is not None
+                            and take_profit_price > 0
+                            and take_profit_price != existing_take_profit
+                        )
+                else:
+                    should_update_protection = bool(stop_loss_price or take_profit_price)
+
+                if should_update_protection:
                     protection_result = set_binance_take_profit_stop_loss.invoke(
                         {
                             "symbol": asset,
@@ -210,7 +245,6 @@ class ExecutionManager:
                     warnings.append("存在未提供 asset 的平仓决策，已跳过执行。")
                     continue
                 entry_result = close_binance_position.invoke({"symbol": asset})
-                self.trader_round_store.delete_position_state(asset)
                 trade_info = self._build_trade_info_from_open_entry(
                     asset, exec_action, None
                 )

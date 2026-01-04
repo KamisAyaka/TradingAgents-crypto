@@ -214,15 +214,6 @@ class PersistenceManager:
         else:
             situation = f"{asset or '多资产'} | {decision} | {thesis or '无'}"
 
-        alert_low = None
-        alert_high = None
-        stop_val = self._coerce_float(stop_loss)
-        take_val = self._coerce_float(take_profit)
-        if stop_val:
-            alert_low = stop_val
-        if take_val:
-            alert_high = take_val
-
         return {
             "summary": summary,
             "situation": situation,
@@ -231,8 +222,6 @@ class PersistenceManager:
             "decision": decision,
             "asset": asset,
             "is_open_entry": decision in {"LONG", "SHORT"},
-            "alert_low": alert_low,
-            "alert_high": alert_high,
             "entry_price": self._coerce_float(entry_price),
             "stop_loss": self._coerce_float(stop_loss),
             "take_profit": self._coerce_float(take_profit),
