@@ -149,6 +149,29 @@ class BinanceFuturesService:
             recv_window=self.settings.recv_window,
         )
 
+    def cancel_order(self, symbol: str, order_id: str | int) -> Dict[str, Any]:
+        symbol = symbol.upper()
+        candidates = (
+            "cancel_order",
+            "cancel_order_v1",
+            "cancel_order_v2",
+            "cancel_open_order",
+        )
+        for name in candidates:
+            func = getattr(self._rest, name, None)
+            if func is None:
+                continue
+            try:
+                return self._call_rest(
+                    func,
+                    symbol=symbol,
+                    order_id=order_id,
+                    recv_window=self.settings.recv_window,
+                )
+            except Exception:
+                continue
+        raise BinanceFuturesError("当前 SDK 不支持取消单个委托。")
+
     def get_open_orders(self, symbol: str) -> List[Dict[str, Any]]:
         symbol = symbol.upper()
         candidates = (
@@ -246,10 +269,10 @@ class BinanceFuturesService:
             pos_side_arg = "LONG" if position_amt > 0 else "SHORT"
 
         if replace_existing:
-            try:
-                self.cancel_all_algo_orders(symbol)
-            except BinanceFuturesError:
-                self.cancel_symbol_orders(symbol)
+            cancel_stop = stop_loss_price is not None and stop_loss_price > 0
+            cancel_take = take_profit_price is not None and take_profit_price > 0
+            if cancel_stop or cancel_take:
+                self._cancel_exit_orders(symbol, cancel_stop, cancel_take)
 
         results: Dict[str, Any] = {}
         if stop_loss_price is not None and stop_loss_price > 0:
@@ -273,6 +296,40 @@ class BinanceFuturesService:
         if not results:
             raise BinanceFuturesError("止盈/止损价格无效，未能创建任何订单。")
         return results
+
+    def _cancel_exit_orders(
+        self, symbol: str, cancel_stop: bool, cancel_take: bool
+    ) -> None:
+        orders = self.get_open_orders(symbol)
+        stop_types = {"STOP_MARKET", "STOP", "STOP_LOSS", "STOP_LOSS_LIMIT"}
+        take_types = {"TAKE_PROFIT_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}
+
+        for order in orders:
+            order_type = str(order.get("type") or order.get("orderType") or "").upper()
+            order_id = order.get("orderId") or order.get("order_id")
+            algo_id = order.get("algoId") or order.get("algo_id")
+            should_cancel = (
+                cancel_stop and order_type in stop_types
+            ) or (
+                cancel_take and order_type in take_types
+            )
+            if not should_cancel:
+                continue
+            try:
+                if order_id is not None:
+                    self.cancel_order(symbol, order_id)
+                elif algo_id is not None:
+                    cancel_algo = getattr(self._rest, "cancel_algo_order", None)
+                    if cancel_algo is None:
+                        raise BinanceFuturesError("当前 SDK 不支持取消算法委托。")
+                    self._call_rest(
+                        cancel_algo,
+                        symbol=symbol.upper(),
+                        algo_id=algo_id,
+                        recv_window=self.settings.recv_window,
+                    )
+            except Exception:
+                continue
 
     # ------------------------ Execution helpers ------------------------ #
     def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:

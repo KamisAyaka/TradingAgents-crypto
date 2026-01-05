@@ -12,7 +12,12 @@ logger = logging.getLogger(__name__)
 
 class PersistenceManager:
     """
-    负责将运行时状态转换为数据库记录及 Trace 日志。
+    持久化管理器 (PersistenceManager)
+    
+    职责：
+    1. 将 Agent 的运行状态 (State) 转换为结构化的数据记录。
+    2. 记录 Trace 日志 (TraceStore)：将思考过程、工具调用、决策逻辑保存为可视化的时间线 (Timeline)。
+    3. 记录交易回合摘要 (TraderRoundMemoryStore)：将核心交易决策（Asset, Direction, Thesis）存入历史数据库，供短期记忆检索。
     """
 
     def __init__(
@@ -24,17 +29,25 @@ class PersistenceManager:
         self.trace_store = trace_store
 
     def persist_trace_snapshot(self, state: Dict[str, Any]) -> None:
-        """记录完整的 Trace 过程快照"""
+        """
+        记录完整的 Trace 过程快照。
+        
+        该方法会收集各个 Analyst (Market, News, etc.) 的输出，以及最终的 Trader 决策，
+        组合成一个完整的 JSON 对象存入 Trace 库。前端 Focus Page 的 "Agent Thinking" 
+        部分就是通过读取这里的数据来展示的。
+        """
         plan_text = state.get("trader_investment_plan") or ""
         plan = self._extract_plan_json(plan_text) or {}
         final_decision_text = state.get("final_trade_decision") or ""
         final_decision = self._extract_plan_json(final_decision_text) or {}
 
+        # 只保留一个资产计划摘要，便于前端快速展示。
         trade_plan_summary = None
         per_asset = plan.get("per_asset_decisions") or []
         if per_asset:
             trade_plan_summary = per_asset[0]
 
+        # 从执行结果中提取工具调用，供 Trace 时间线展示。
         risk_control = final_decision.get("risk_control") or {}
         execution = final_decision.get("execution") or []
         tool_calls: list[dict[str, Any]] = []
@@ -113,7 +126,13 @@ class PersistenceManager:
             logger.warning("写入 trace 失败", exc_info=True)
 
     def record_trader_round_summary(self, state: Dict[str, Any]) -> None:
-        """记录结构化的交易决策摘要到数据库"""
+        """
+        记录结构化的交易决策摘要到数据库 (TraderRoundMemory)。
+        
+        这部分数据用于：
+        1. Agent 下一轮运行时，检索“最近几轮的决策”，以保持连贯性。
+        2. 记录入场时的 Thesis (理由)，以便在平仓时进行复盘对比。
+        """
         plan_text = state.get("trader_investment_plan") or ""
         plan = self._extract_plan_json(plan_text) or {}
         summary_data = self._build_trader_round_summary(state, plan)
@@ -125,6 +144,7 @@ class PersistenceManager:
     def build_trade_info_from_open_entry(
         self, symbol: str, action: str, price: Optional[float]
     ) -> Optional[Dict[str, Any]]:
+        # 平仓信息与“上次平仓后的第一笔开仓”绑定，避免被后续分析覆盖。
         entry = self.trader_round_store.get_first_open_entry_since_close(symbol)
         if not entry:
             return None
@@ -151,6 +171,12 @@ class PersistenceManager:
         }
 
     def build_context_snapshot(self, state: Dict[str, Any]) -> str:
+        """
+        生成简化版的上下文快照 (Context Snapshot)。
+        
+        当需要进行“交易复盘 (Reflection)”时，我们需要知道当时的市场环境（市场报告、新闻、叙事）。
+        这个方法提取最重要的摘要信息，打包成 JSON 字符串，作为交易记忆的一部分存下来。
+        """
         market = self._summarize_market_report(state.get("market_report"))
         newsflash = self._summarize_newsflash_report(state.get("newsflash_report"))
         longform = self._summarize_longform_report(state.get("longform_report"))

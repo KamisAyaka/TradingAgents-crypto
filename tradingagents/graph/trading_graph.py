@@ -41,6 +41,14 @@ from .persistence_manager import PersistenceManager
 
 
 class _FallbackChatModel(BaseChatModel):
+    """
+    带有回退机制的聊天模型包装器 (Fallback Wrapper)。
+    
+    设计目的：
+    主要用于处理 DeepSeek API 不稳定或限流的情况。当 Primary Model (DeepSeek) 
+    调用失败时，自动切换到 Fallback Model (通常是官方 DeepSeek 或其他备用源)，
+    确保交易系统的高可用性 (High Availability)。
+    """
     def __init__(
         self,
         primary: BaseChatModel,
@@ -96,7 +104,19 @@ class _FallbackChatModel(BaseChatModel):
 
 
 class TradingAgentsGraph:
-    """交易多智能体框架的主控制类 (Lean Version)。"""
+    """
+    交易多智能体图 (TradingAgentsGraph) - Lean Version
+    
+    这是整个系统的主控制器，负责编排 LangGraph 工作流。
+    
+    主要组件：
+    1. LLM 初始化: 支持 DeepSeek (Primary) + OpenAI/Others (Fallback) 的双模型架构。
+    2. Tool Nodes: 封装市场数据、新闻、长文分析等工具。
+    3. Managers:
+       - ExecutionManager: 负责通过 Binance API 执行交易。
+       - PersistenceManager: 负责保存 Trace 和 Memories。
+    4. Graph Setup: 定义 Agent 之间的流转逻辑 (State Graph)。
+    """
 
     def __init__(
         self,
@@ -252,7 +272,28 @@ class TradingAgentsGraph:
         min_leverage: Optional[int] = None,
         max_leverage: Optional[int] = None,
     ):
-        """在指定加密货币/交易对和日期上运行整套图。"""
+        """
+        执行核心交易流程 (Propagate)。
+        
+        这是外部调用 Agent 系统的主要入口。
+        
+        参数:
+            asset_symbols: 要交易的资产列表 (e.g. ["BTCUSDT", "ETHUSDT"])。
+            trade_date: 模拟/回测日期 (默认今天)。
+            available_capital: 可用本金 (默认 10000)。
+            min_leverage / max_leverage: 杠杆范围限制。
+            
+        流程:
+            1. 规范化配置参数 (Capital, Leverage)。
+            2. 初始化 LangGraph 状态 (State Initialization)。
+            3. 运行 Agent Graph (`self.graph.invoke`) -> 产出分析报告和计划。
+            4. ExecutionManager 执行风控与下单 (`apply_risk_controls_and_execute`)。
+            5. PersistenceManager 保存状态与 Trace (`persist_trace_snapshot`)。
+            6. 如果有平仓操作，触发自动复盘 (`record_trade_reflection`)。
+            
+        返回:
+            final_state, final_trade_decision
+        """
 
         self.ticker = asset_symbols
 
@@ -307,20 +348,20 @@ class TradingAgentsGraph:
         init_agent_state["max_leverage"] = resolved_max
         args = self.propagator.get_graph_args()
 
-        # 标准模式运行图
+        # 运行完整的 Agent 图，产出分析报告和交易计划。
         final_state = self.graph.invoke(init_agent_state, **args)
         
-        # 使用 ExecutionManager 执行风控与下单
+        # 基于计划执行风控校验，并下发交易/保护指令。
         final_state = self.execution_manager.apply_risk_controls_and_execute(final_state)
 
         # 保存最终状态，供反思用
         self.curr_state = final_state
         
-        # 使用 PersistenceManager 进行状态记录
+        # 写入摘要与 Trace，供前端展示与历史追踪。
         self.persistence_manager.record_trader_round_summary(final_state)
         self.persistence_manager.persist_trace_snapshot(final_state)
 
-        # 返回完整状态与提炼后的最终信号
+        # 如有平仓记录，触发复盘并写入记忆库。
         pending = final_state.pop("_pending_trade_info", None)
         if pending:
             for info in pending:
@@ -332,7 +373,15 @@ class TradingAgentsGraph:
 
     def record_trade_reflection(self, trade_info: Dict[str, Any]) -> Optional[str]:
         """
-        使用 trade_info（symbol, side, entry/exit 等信息）生成一次交易复盘，并写入 trade_memory。
+        执行交易复盘 (Trade Reflection)。
+        
+        触发时机：当 ExecutionManager 检测到平仓 (Close) 行为时。
+        
+        功能：
+        1. 检索该笔交易的开仓上下文 (Open Context) - 当时为什么开仓？
+        2. 检索当前的平仓上下文 (Close Context) - 现在为什么平仓？
+        3. 调用 `trade_reflector` (LLM) 进行深度自我反思。
+        4. 将反思结果 (Summary) 存入 `trade_memory` (Vector Store)，供未来决策参考。
         """
         if not trade_info:
             return None
@@ -345,7 +394,7 @@ class TradingAgentsGraph:
                     f"{open_entry.get('summary')}\n\n{open_entry.get('situation')}"
                 )
         
-        # 委托 PersistenceManager 构建上下文快照
+        # 构建平仓时的上下文快照，供复盘模型引用。
         state_snapshot["close_position_context"] = self.persistence_manager.build_context_snapshot(
             state_snapshot
         )

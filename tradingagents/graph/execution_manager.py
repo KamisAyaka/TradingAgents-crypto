@@ -18,14 +18,36 @@ logger = logging.getLogger(__name__)
 
 class ExecutionManager:
     """
-    负责将“交易计划 JSON”转换为实际的 Binance 订单，并执行风控检查。
+    执行管理器 (ExecutionManager)
+    
+    职责：
+    1. 解析交易员生成的投资计划 (JSON)。
+    2. 执行风险控制检查 (Risk Control)：
+       - 强制检查 10% 最大止损规则 (基于杠杆调整后的名义价值)。
+       - 验证必填参数 (Leverage, Stop Loss)。
+    3. 执行交易指令 (Execution)：
+       - 设置杠杆。
+       - 计算目标仓位价值。
+       - 检查当前持仓状态 (避免重复开仓或反向持仓)。
+       - 提交开仓/平仓订单到 Binance。
+       - 更新止盈止损保护单。
     """
 
     def __init__(self, trader_round_store: TraderRoundMemoryStore):
         self.trader_round_store = trader_round_store
 
     def apply_risk_controls_and_execute(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """执行风控与交易"""
+        """
+        应用风控规则并执行交易。
+        
+        流程：
+        1. 解析 state 中的 `trader_investment_plan`。
+        2. 遍历每个资产的决策，执行风控检查 (validate constraints)。
+           - 如果止损范围超过 10% (adjust to max 10% loss)，自动修正止损价格。
+           - 记录所有警告和调整信息。
+        3. 调用 `_execute_plan` 执行实际的下单操作。
+        4. 更新 state 中的 `final_trade_decision`，包含风控结果和执行结果。
+        """
         plan_text = state.get("trader_investment_plan") or ""
         plan = self._extract_plan_json(plan_text)
         adjustments: list[str] = []
@@ -44,6 +66,7 @@ class ExecutionManager:
             )
             return state
 
+        # 逐资产处理计划，并且只对“已有真实持仓”的资产做风控校验。
         per_asset = plan.get("per_asset_decisions") or []
         for decision in per_asset:
             if not isinstance(decision, dict):
@@ -55,6 +78,7 @@ class ExecutionManager:
             execution = decision.get("execution") or {}
             risk = decision.get("risk_management") or {}
             asset = str(decision.get("asset") or "")
+            # 风控基准价使用交易所持仓的 entryPrice，而不是计划中的估算价。
             entry_price_for_risk = None
             if asset:
                 try:
@@ -75,6 +99,7 @@ class ExecutionManager:
             if stop_loss_price is not None:
                 risk["stop_loss_price"] = stop_loss_price
 
+            # 提前把止盈目标规范化（四舍五入），避免下游重复处理。
             take_profit_targets = risk.get("take_profit_targets")
             if isinstance(take_profit_targets, list):
                 rounded_targets = [
@@ -87,6 +112,13 @@ class ExecutionManager:
                 risk["take_profit_targets"] = self._round_price(
                     self._coerce_float(take_profit_targets)
                 )
+            take_profit_for_check = None
+            if isinstance(risk.get("take_profit_targets"), list):
+                targets = risk.get("take_profit_targets") or []
+                if targets:
+                    take_profit_for_check = targets[0]
+            else:
+                take_profit_for_check = risk.get("take_profit_targets")
 
             if entry_price_for_risk is None:
                 continue
@@ -100,7 +132,16 @@ class ExecutionManager:
                     f"{decision.get('asset')}: 缺少 stop_loss_price，无法校验 10% 规则。"
                 )
                 continue
+            if take_profit_for_check is None or take_profit_for_check <= 0:
+                warnings.append(
+                    f"{decision.get('asset')}: 缺少 take_profit_targets，无法执行止盈/止损设置。"
+                )
+                continue
 
+            # 风控核心逻辑：
+            # 允许的最大亏损为本金的 10%。
+            # 公式: Allowed_Distance = 10% / 杠杆倍数
+            # 例如 10x 杠杆，允许价格波动 1% (1% * 10 = 10% 亏损)
             allowed_distance = 0.10 / leverage
             if action == "LONG":
                 allowed_stop = entry_price_for_risk * (1 - allowed_distance)
@@ -118,9 +159,11 @@ class ExecutionManager:
                     f"{decision.get('asset')}: 止损风险 {leveraged_loss:.2%} > 10%，已调整为 {risk['stop_loss_price']}。"
                 )
 
+        # 获取可用资本并执行
         available_capital = state.get("available_capital") or 0.0
         execution_results = self._execute_plan(plan, available_capital, warnings)
 
+        # 更新状态，序列化最终决策供后续步骤或前端使用
         state["trader_investment_plan"] = json.dumps(plan, ensure_ascii=False)
         state["final_trade_decision"] = json.dumps(
             {
@@ -147,6 +190,17 @@ class ExecutionManager:
         available_capital: float,
         warnings: list[str],
     ) -> list[Dict[str, Any]]:
+        """
+        执行具体的交易计划。
+        
+        参数:
+            plan: 解析后的交易计划。
+            available_capital: 账户可用 USDT 余额。
+            warnings: 用于收集执行过程中的警告列表。
+            
+        返回:
+            list[Dict]: 每笔交易的执行结果摘要。
+        """
         results: list[Dict[str, Any]] = []
         per_asset = plan.get("per_asset_decisions") or []
         for decision in per_asset:
@@ -222,6 +276,7 @@ class ExecutionManager:
                 # 2. 如果已持仓且方向一致，直接跳过 (Hold)
                 # 3. 如果已持仓但方向不一致（反向），则报警（还是只平仓？简单起见，提示反向持仓需人工干预或等待平仓信号）
                 
+                # 有持仓时优先用交易所 entryPrice 回写给前端/日志展示。
                 if has_position and entry_price_from_position:
                     execution["entry_price"] = entry_price_from_position
                     decision["execution"] = execution
@@ -250,6 +305,7 @@ class ExecutionManager:
                     except Exception:
                         pass
                
+                # 基于交易所实际挂单判断是否需要更新止盈/止损。
                 exchange_stop_loss = None
                 exchange_take_profit = None
                 if has_position:
@@ -264,35 +320,49 @@ class ExecutionManager:
                 should_update_protection = False
                 if has_position:
                     update_stop_loss = (
-                        exchange_stop_loss is None
-                        and stop_loss_price is not None
+                        stop_loss_price is not None
                         and stop_loss_price > 0
+                        and stop_loss_price != exchange_stop_loss
                     )
                     update_take_profit = (
                         take_profit_price is not None
                         and take_profit_price > 0
                         and take_profit_price != exchange_take_profit
                     )
-                    if exchange_stop_loss is not None:
-                        stop_loss_price = exchange_stop_loss
                     should_update_protection = update_stop_loss or update_take_profit
                 else:
-                    should_update_protection = bool(stop_loss_price or take_profit_price)
+                    update_stop_loss = bool(stop_loss_price)
+                    update_take_profit = bool(take_profit_price)
+                    should_update_protection = update_stop_loss or update_take_profit
 
                 if should_update_protection:
-                    protection_result = set_binance_take_profit_stop_loss.invoke(
-                        {
-                            "symbol": asset,
-                            "stop_loss_price": stop_loss_price or 0.0,
-                            "take_profit_price": take_profit_price or 0.0,
-                            "working_type": "MARK_PRICE",
-                        }
-                    )
+                    if update_stop_loss:
+                        protection_result = set_binance_take_profit_stop_loss.invoke(
+                            {
+                                "symbol": asset,
+                                "stop_loss_price": stop_loss_price or 0.0,
+                                "take_profit_price": 0.0,
+                                "working_type": "MARK_PRICE",
+                            }
+                        )
+                    if update_take_profit:
+                        protection_result = set_binance_take_profit_stop_loss.invoke(
+                            {
+                                "symbol": asset,
+                                "stop_loss_price": 0.0,
+                                "take_profit_price": take_profit_price or 0.0,
+                                "working_type": "MARK_PRICE",
+                            }
+                        )
             elif exec_action == "CLOSE":
+                # 处理平仓逻辑
                 if not asset:
                     warnings.append("存在未提供 asset 的平仓决策，已跳过执行。")
                     continue
+                # 调用工具平掉该符号的所有仓位
                 entry_result = close_binance_position.invoke({"symbol": asset})
+                
+                # 构建平仓记录，用于后续的“复盘 (Reflection)”
                 trade_info = self._build_trade_info_from_open_entry(
                     asset, exec_action, None
                 )
