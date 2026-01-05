@@ -136,6 +136,8 @@ class ExecutionManager:
                 warnings.append(
                     f"{decision.get('asset')}: 缺少 take_profit_targets，无法执行止盈/止损设置。"
                 )
+            if missing_stop_loss or missing_take_profit:
+                continue
             if stop_loss_price is None:
                 continue
             if not missing_stop_loss:
@@ -310,60 +312,27 @@ class ExecutionManager:
                         pass
                
                 # 基于交易所实际挂单判断是否需要更新止盈/止损。
-                exchange_stop_loss = None
-                exchange_take_profit = None
-                if has_position:
-                    exchange_orders = get_service().get_open_exit_orders(asset)
-                    exchange_stop_loss = self._round_price(
-                        self._coerce_float(exchange_orders.get("stop_loss"))
-                    )
-                    exchange_take_profit = self._round_price(
-                        self._coerce_float(exchange_orders.get("take_profit"))
-                    )
+                update_stop_loss = bool(stop_loss_price)
+                update_take_profit = bool(take_profit_price)
 
-                should_update_protection = False
-                if has_position:
-                    update_stop_loss = (
-                        stop_loss_price is not None
-                        and stop_loss_price > 0
-                        and (
-                            exchange_stop_loss is None
-                            or stop_loss_price != exchange_stop_loss
-                        )
+                if update_stop_loss:
+                    protection_result = set_binance_take_profit_stop_loss.invoke(
+                        {
+                            "symbol": asset,
+                            "stop_loss_price": stop_loss_price or 0.0,
+                            "take_profit_price": 0.0,
+                            "working_type": "MARK_PRICE",
+                        }
                     )
-                    update_take_profit = (
-                        take_profit_price is not None
-                        and take_profit_price > 0
-                        and (
-                            exchange_take_profit is None
-                            or take_profit_price != exchange_take_profit
-                        )
+                if update_take_profit:
+                    protection_result = set_binance_take_profit_stop_loss.invoke(
+                        {
+                            "symbol": asset,
+                            "stop_loss_price": 0.0,
+                            "take_profit_price": take_profit_price or 0.0,
+                            "working_type": "MARK_PRICE",
+                        }
                     )
-                    should_update_protection = update_stop_loss or update_take_profit
-                else:
-                    update_stop_loss = bool(stop_loss_price)
-                    update_take_profit = bool(take_profit_price)
-                    should_update_protection = update_stop_loss or update_take_profit
-
-                if should_update_protection:
-                    if update_stop_loss:
-                        protection_result = set_binance_take_profit_stop_loss.invoke(
-                            {
-                                "symbol": asset,
-                                "stop_loss_price": stop_loss_price or 0.0,
-                                "take_profit_price": 0.0,
-                                "working_type": "MARK_PRICE",
-                            }
-                        )
-                    if update_take_profit:
-                        protection_result = set_binance_take_profit_stop_loss.invoke(
-                            {
-                                "symbol": asset,
-                                "stop_loss_price": 0.0,
-                                "take_profit_price": take_profit_price or 0.0,
-                                "working_type": "MARK_PRICE",
-                            }
-                        )
             elif exec_action == "CLOSE":
                 # 处理平仓逻辑
                 if not asset:

@@ -300,36 +300,11 @@ class BinanceFuturesService:
     def _cancel_exit_orders(
         self, symbol: str, cancel_stop: bool, cancel_take: bool
     ) -> None:
-        orders = self.get_open_orders(symbol)
-        stop_types = {"STOP_MARKET", "STOP", "STOP_LOSS", "STOP_LOSS_LIMIT"}
-        take_types = {"TAKE_PROFIT_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT"}
-
-        for order in orders:
-            order_type = str(order.get("type") or order.get("orderType") or "").upper()
-            order_id = order.get("orderId") or order.get("order_id")
-            algo_id = order.get("algoId") or order.get("algo_id")
-            should_cancel = (
-                cancel_stop and order_type in stop_types
-            ) or (
-                cancel_take and order_type in take_types
-            )
-            if not should_cancel:
-                continue
-            try:
-                if order_id is not None:
-                    self.cancel_order(symbol, order_id)
-                elif algo_id is not None:
-                    cancel_algo = getattr(self._rest, "cancel_algo_order", None)
-                    if cancel_algo is None:
-                        raise BinanceFuturesError("当前 SDK 不支持取消算法委托。")
-                    self._call_rest(
-                        cancel_algo,
-                        symbol=symbol.upper(),
-                        algo_id=algo_id,
-                        recv_window=self.settings.recv_window,
-                    )
-            except Exception:
-                continue
+        # 不查询挂单，直接全量取消（按用户要求）。
+        try:
+            self.cancel_all_algo_orders(symbol)
+        except BinanceFuturesError:
+            self.cancel_symbol_orders(symbol)
 
     # ------------------------ Execution helpers ------------------------ #
     def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
