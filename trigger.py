@@ -2,6 +2,7 @@
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -491,10 +492,18 @@ def configure_scheduler(scheduler):
 def execute_startup_tasks():
     """执行启动时的初始化任务 - 供 main 和 server.py 复用"""
     logger.info("执行启动初始化任务...")
-    run_binance_fetcher()
-    run_odaily_newsflash_fetcher()
-    run_odaily_article_fetcher()
-    run_longform_analysis()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(run_binance_fetcher),
+            executor.submit(run_odaily_newsflash_fetcher),
+            executor.submit(run_odaily_article_fetcher),
+            executor.submit(run_longform_analysis),
+        ]
+        for future in futures:
+            try:
+                future.result()
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.exception("启动初始化任务执行失败: %s", exc)
     run_market_monitor() 
 
 
@@ -506,7 +515,10 @@ def main():
     # 预初始化交易图
     init_trading_graph()
     
-    scheduler = BlockingScheduler()
+    scheduler = BlockingScheduler(
+        executors={"default": ThreadPoolExecutor(max_workers=6)},
+        job_defaults={"coalesce": True, "max_instances": 2},
+    )
     configure_scheduler(scheduler)
     
     # 打印所有任务
