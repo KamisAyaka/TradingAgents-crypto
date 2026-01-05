@@ -149,6 +149,65 @@ class BinanceFuturesService:
             recv_window=self.settings.recv_window,
         )
 
+    def get_open_orders(self, symbol: str) -> List[Dict[str, Any]]:
+        symbol = symbol.upper()
+        candidates = (
+            "get_open_orders",
+            "open_orders",
+            "get_open_orders_v1",
+            "open_orders_v1",
+            "get_open_orders_v2",
+            "open_orders_v2",
+            "query_open_orders",
+        )
+        for name in candidates:
+            func = getattr(self._rest, name, None)
+            if func is None:
+                continue
+            try:
+                data = self._call_rest(
+                    func, symbol=symbol, recv_window=self.settings.recv_window
+                )
+                if isinstance(data, dict) and isinstance(data.get("orders"), list):
+                    return data["orders"]
+                if isinstance(data, list):
+                    return data
+            except Exception:
+                continue
+        raise BinanceFuturesError("当前 SDK 不支持查询未完成委托操作。")
+
+    def get_open_exit_orders(self, symbol: str) -> Dict[str, Optional[float]]:
+        try:
+            orders = self.get_open_orders(symbol)
+        except BinanceFuturesError:
+            return {"stop_loss": None, "take_profit": None}
+
+        stop_loss = None
+        take_profit = None
+        for order in orders:
+            order_type = str(order.get("type") or order.get("orderType") or "").upper()
+            trigger = (
+                order.get("stopPrice")
+                or order.get("triggerPrice")
+                or order.get("stop_price")
+                or order.get("trigger_price")
+            )
+            try:
+                trigger_price = float(trigger) if trigger is not None else None
+            except (TypeError, ValueError):
+                trigger_price = None
+            if trigger_price is None or trigger_price <= 0:
+                continue
+            if order_type in {"STOP_MARKET", "STOP", "STOP_LOSS", "STOP_LOSS_LIMIT"}:
+                stop_loss = trigger_price
+            elif order_type in {
+                "TAKE_PROFIT_MARKET",
+                "TAKE_PROFIT",
+                "TAKE_PROFIT_LIMIT",
+            }:
+                take_profit = trigger_price
+        return {"stop_loss": stop_loss, "take_profit": take_profit}
+
     def configure_exit_orders(
         self,
         symbol: str,

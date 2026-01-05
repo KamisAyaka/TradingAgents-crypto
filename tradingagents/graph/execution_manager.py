@@ -55,13 +55,44 @@ class ExecutionManager:
             execution = decision.get("execution") or {}
             risk = decision.get("risk_management") or {}
             asset = str(decision.get("asset") or "")
-            entry_price_for_risk = self._safe_mark_price(asset) if asset else None
+            entry_price_for_risk = None
+            if asset:
+                try:
+                    positions = get_service().get_positions([asset])
+                    if positions:
+                        pos = positions[0]
+                        position_amt = float(pos.get("positionAmt", 0.0))
+                        if abs(position_amt) > 0:
+                            entry_price_for_risk = self._coerce_float(
+                                pos.get("entryPrice")
+                            )
+                except Exception:
+                    entry_price_for_risk = None
             leverage = self._coerce_int(execution.get("leverage"))
-            stop_loss_price = self._coerce_float(risk.get("stop_loss_price"))
+            stop_loss_price = self._round_price(
+                self._coerce_float(risk.get("stop_loss_price"))
+            )
+            if stop_loss_price is not None:
+                risk["stop_loss_price"] = stop_loss_price
 
-            if entry_price_for_risk is None or leverage is None or leverage <= 0:
+            take_profit_targets = risk.get("take_profit_targets")
+            if isinstance(take_profit_targets, list):
+                rounded_targets = [
+                    self._round_price(self._coerce_float(target))
+                    for target in take_profit_targets
+                ]
+                rounded_targets = [target for target in rounded_targets if target is not None]
+                risk["take_profit_targets"] = rounded_targets
+            elif take_profit_targets is not None:
+                risk["take_profit_targets"] = self._round_price(
+                    self._coerce_float(take_profit_targets)
+                )
+
+            if entry_price_for_risk is None:
+                continue
+            if leverage is None or leverage <= 0:
                 warnings.append(
-                    f"{decision.get('asset')}: 缺少 entry_price 或 leverage，无法校验 10% 规则。"
+                    f"{decision.get('asset')}: 缺少 leverage，无法校验 10% 规则。"
                 )
                 continue
             if stop_loss_price is None or stop_loss_price <= 0:
@@ -78,7 +109,7 @@ class ExecutionManager:
                     adjusted_stop = entry_price_for_risk * (1 - allowed_distance)
                 else:
                     adjusted_stop = entry_price_for_risk * (1 + allowed_distance)
-                risk["stop_loss_price"] = round(adjusted_stop, 8)
+                risk["stop_loss_price"] = self._round_price(adjusted_stop)
                 decision["risk_management"] = risk
                 adjustments.append(
                     f"{decision.get('asset')}: 止损风险 {leveraged_loss:.2%} > 10%，已调整为 {risk['stop_loss_price']}。"
@@ -216,35 +247,32 @@ class ExecutionManager:
                     except Exception:
                         pass
                
-                existing_stop_loss = None
-                existing_take_profit = None
+                exchange_stop_loss = None
+                exchange_take_profit = None
                 if has_position:
-                    open_entry = self.trader_round_store.get_latest_open_entry(asset)
-                    if open_entry:
-                        existing_stop_loss = self._coerce_float(
-                            open_entry.get("stop_loss")
-                        )
-                        existing_take_profit = self._coerce_float(
-                            open_entry.get("take_profit")
-                        )
-                    if existing_stop_loss is not None:
-                        stop_loss_price = existing_stop_loss
-                    else:
-                        stop_loss_price = 0.0
+                    exchange_orders = get_service().get_open_exit_orders(asset)
+                    exchange_stop_loss = self._round_price(
+                        self._coerce_float(exchange_orders.get("stop_loss"))
+                    )
+                    exchange_take_profit = self._round_price(
+                        self._coerce_float(exchange_orders.get("take_profit"))
+                    )
 
                 should_update_protection = False
                 if has_position:
-                    if existing_stop_loss is None and take_profit_price:
-                        warnings.append(
-                            f"{asset}: 未找到已有止损，跳过止盈调整以避免修改止损。"
-                        )
-                        should_update_protection = False
-                    else:
-                        should_update_protection = (
-                            take_profit_price is not None
-                            and take_profit_price > 0
-                            and take_profit_price != existing_take_profit
-                        )
+                    update_stop_loss = (
+                        exchange_stop_loss is None
+                        and stop_loss_price is not None
+                        and stop_loss_price > 0
+                    )
+                    update_take_profit = (
+                        take_profit_price is not None
+                        and take_profit_price > 0
+                        and take_profit_price != exchange_take_profit
+                    )
+                    if exchange_stop_loss is not None:
+                        stop_loss_price = exchange_stop_loss
+                    should_update_protection = update_stop_loss or update_take_profit
                 else:
                     should_update_protection = bool(stop_loss_price or take_profit_price)
 
@@ -337,13 +365,12 @@ class ExecutionManager:
     def _coerce_float(value: Any) -> Optional[float]:
         if value is None:
             return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        try:
-            text = str(value).strip().lower().replace("usdt", "")
-            return float(text)
-        except Exception:
+
+    @staticmethod
+    def _round_price(value: Optional[float]) -> Optional[float]:
+        if value is None:
             return None
+        return float(int(round(value)))
 
     @staticmethod
     def _coerce_int(value: Any) -> Optional[int]:

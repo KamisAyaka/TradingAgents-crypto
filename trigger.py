@@ -337,7 +337,7 @@ def _check_price_alert(
             try:
                 price = get_service().get_mark_price(symbol)
                 if price > 0:
-                    threshold_pct = float(os.getenv("PRICE_ALERT_THRESHOLD_PCT", "0.002"))
+                    threshold_pct = float(os.getenv("PRICE_ALERT_THRESHOLD_PCT", "0.005"))
 
                     reached_low = stop_loss is not None and price <= float(stop_loss)
                     reached_high = take_profit is not None and price >= float(take_profit)
