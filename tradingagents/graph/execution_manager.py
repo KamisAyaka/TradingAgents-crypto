@@ -112,13 +112,6 @@ class ExecutionManager:
                 risk["take_profit_targets"] = self._round_price(
                     self._coerce_float(take_profit_targets)
                 )
-            take_profit_for_check = None
-            if isinstance(risk.get("take_profit_targets"), list):
-                targets = risk.get("take_profit_targets") or []
-                if targets:
-                    take_profit_for_check = targets[0]
-            else:
-                take_profit_for_check = risk.get("take_profit_targets")
 
             if entry_price_for_risk is None:
                 continue
@@ -127,37 +120,48 @@ class ExecutionManager:
                     f"{decision.get('asset')}: 缺少 leverage，无法校验 10% 规则。"
                 )
                 continue
-            if stop_loss_price is None or stop_loss_price <= 0:
+            missing_stop_loss = stop_loss_price is None or stop_loss_price <= 0
+            if missing_stop_loss:
                 warnings.append(
                     f"{decision.get('asset')}: 缺少 stop_loss_price，无法校验 10% 规则。"
                 )
-                continue
-            if take_profit_for_check is None or take_profit_for_check <= 0:
+            missing_take_profit = False
+            if isinstance(risk.get("take_profit_targets"), list):
+                targets = risk.get("take_profit_targets") or []
+                missing_take_profit = not targets
+            else:
+                tp_value = risk.get("take_profit_targets")
+                missing_take_profit = tp_value is None or tp_value <= 0
+            if missing_take_profit:
                 warnings.append(
                     f"{decision.get('asset')}: 缺少 take_profit_targets，无法执行止盈/止损设置。"
                 )
+            if stop_loss_price is None:
                 continue
+            if not missing_stop_loss:
+                # 风控核心逻辑：
+                # 允许的最大亏损为本金的 10%。
+                # 公式: Allowed_Distance = 10% / 杠杆倍数
+                # 例如 10x 杠杆，允许价格波动 1% (1% * 10 = 10% 亏损)
+                allowed_distance = 0.10 / leverage
+                if action == "LONG":
+                    allowed_stop = entry_price_for_risk * (1 - allowed_distance)
+                    should_adjust = stop_loss_price < allowed_stop
+                else:
+                    allowed_stop = entry_price_for_risk * (1 + allowed_distance)
+                    should_adjust = stop_loss_price > allowed_stop
 
-            # 风控核心逻辑：
-            # 允许的最大亏损为本金的 10%。
-            # 公式: Allowed_Distance = 10% / 杠杆倍数
-            # 例如 10x 杠杆，允许价格波动 1% (1% * 10 = 10% 亏损)
-            allowed_distance = 0.10 / leverage
-            if action == "LONG":
-                allowed_stop = entry_price_for_risk * (1 - allowed_distance)
-                should_adjust = stop_loss_price < allowed_stop
-            else:
-                allowed_stop = entry_price_for_risk * (1 + allowed_distance)
-                should_adjust = stop_loss_price > allowed_stop
-
-            if should_adjust:
-                distance_pct = abs(stop_loss_price - entry_price_for_risk) / entry_price_for_risk
-                leveraged_loss = distance_pct * leverage
-                risk["stop_loss_price"] = self._round_price(allowed_stop)
-                decision["risk_management"] = risk
-                adjustments.append(
-                    f"{decision.get('asset')}: 止损风险 {leveraged_loss:.2%} > 10%，已调整为 {risk['stop_loss_price']}。"
-                )
+                if should_adjust:
+                    distance_pct = (
+                        abs(stop_loss_price - entry_price_for_risk)
+                        / entry_price_for_risk
+                    )
+                    leveraged_loss = distance_pct * leverage
+                    risk["stop_loss_price"] = self._round_price(allowed_stop)
+                    decision["risk_management"] = risk
+                    adjustments.append(
+                        f"{decision.get('asset')}: 止损风险 {leveraged_loss:.2%} > 10%，已调整为 {risk['stop_loss_price']}。"
+                    )
 
         # 获取可用资本并执行
         available_capital = state.get("available_capital") or 0.0
@@ -322,12 +326,18 @@ class ExecutionManager:
                     update_stop_loss = (
                         stop_loss_price is not None
                         and stop_loss_price > 0
-                        and stop_loss_price != exchange_stop_loss
+                        and (
+                            exchange_stop_loss is None
+                            or stop_loss_price != exchange_stop_loss
+                        )
                     )
                     update_take_profit = (
                         take_profit_price is not None
                         and take_profit_price > 0
-                        and take_profit_price != exchange_take_profit
+                        and (
+                            exchange_take_profit is None
+                            or take_profit_price != exchange_take_profit
+                        )
                     )
                     should_update_protection = update_stop_loss or update_take_profit
                 else:

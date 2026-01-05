@@ -65,7 +65,7 @@ def create_trader(llm, trader_round_store):
 - 观望：处在中间区域、趋势不明、结构混乱或盈亏比无法成立。
 
 ### 风险与检查
-1. 必须给出止损价与止盈价（每次都必须提供，不能留空），否则监控器无法监控触发下一次循环。
+1. 只要是 LONG/SHORT 决策，必须同时给出止损价与止盈价，且为数值，不能为 null，否则监控器无法触发。
 2. 最大亏损：止损距离 × 杠杆 ≤ 10%；超出需降杠杆或调整止损，否则不得开仓。
 3. 结构：关键位间距不足以支撑盈亏比时不得开仓。
 4. 信号：至少一种可解释的反转/延续信号。
@@ -108,9 +108,9 @@ JSON 结构：
       "risk_management": {{
         "invalidations": ["失效条件"],
         "stop_rule": "止损/降仓规则（包含具体价格）",
-        "stop_loss_price": "建议的止损价格（USDT，数值）",
+        "stop_loss_price": "建议的止损价格（USDT，数值，LONG/SHORT 必填，不能为 null）",
         "take_profit_rule": "止盈规则（包含具体价格）",
-        "take_profit_targets": "止盈价（USDT，数值）",
+        "take_profit_targets": "止盈价（USDT，数值，LONG/SHORT 必填，不能为 null）",
         "monitoring": ["需要持续跟踪的信号"]
       }}
     }}
