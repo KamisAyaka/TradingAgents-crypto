@@ -136,8 +136,6 @@ class ExecutionManager:
                 warnings.append(
                     f"{decision.get('asset')}: 缺少 take_profit_targets，无法执行止盈/止损设置。"
                 )
-            if missing_stop_loss or missing_take_profit:
-                continue
             if stop_loss_price is None:
                 continue
             if not missing_stop_loss:
