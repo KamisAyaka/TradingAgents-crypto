@@ -121,34 +121,19 @@ def _initialize_longform_node():
     if _longform_node is not None:
         return _longform_node
 
-    model = os.getenv(
-        "TRADINGAGENTS_DEEP_THINK_LLM",
-        config.get("deep_think_llm", "deepseek-ai/DeepSeek-V3.2"),
-    )
-    base = config.get("deep_backend_url") or "https://api.deepseek.com/v1"
-    fallback_base = config.get("deep_fallback_backend_url")
-
-    primary_key = os.getenv("OPENAI_API_KEY")
-    if not primary_key:
-        raise ValueError("OPENAI_API_KEY 未设置，无法运行长文分析师。")
-    fallback_key = os.getenv("DEEPSEEK_API_KEY")
-    if not fallback_key:
-        fallback_key = primary_key
+    model = "deepseek-chat"
+    base = "https://api.deepseek.com/v1"
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key:
+        raise ValueError("DEEPSEEK_API_KEY 未设置，无法运行长文分析师。")
 
     extra_body = {"enable_thinking": False}
-    primary = ChatOpenAI(
+    llm = ChatOpenAI(
         model=model,
         base_url=base,
-        api_key=SecretStr(primary_key),
+        api_key=SecretStr(api_key),
         extra_body=extra_body,
     )
-    fallback = ChatOpenAI(
-        model=model,
-        base_url=fallback_base or base,
-        api_key=SecretStr(fallback_key),
-        extra_body=extra_body,
-    )
-    llm = _FallbackChatModel(primary, fallback, fallback_base)
     _longform_node = create_crypto_longform_analyst(llm)
     return _longform_node
 
