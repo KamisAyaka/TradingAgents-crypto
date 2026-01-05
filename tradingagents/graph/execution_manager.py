@@ -101,15 +101,18 @@ class ExecutionManager:
                 )
                 continue
 
-            distance_pct = abs(stop_loss_price - entry_price_for_risk) / entry_price_for_risk
-            leveraged_loss = distance_pct * leverage
-            if leveraged_loss > 0.10:
-                allowed_distance = 0.10 / leverage
-                if action == "LONG":
-                    adjusted_stop = entry_price_for_risk * (1 - allowed_distance)
-                else:
-                    adjusted_stop = entry_price_for_risk * (1 + allowed_distance)
-                risk["stop_loss_price"] = self._round_price(adjusted_stop)
+            allowed_distance = 0.10 / leverage
+            if action == "LONG":
+                allowed_stop = entry_price_for_risk * (1 - allowed_distance)
+                should_adjust = stop_loss_price < allowed_stop
+            else:
+                allowed_stop = entry_price_for_risk * (1 + allowed_distance)
+                should_adjust = stop_loss_price > allowed_stop
+
+            if should_adjust:
+                distance_pct = abs(stop_loss_price - entry_price_for_risk) / entry_price_for_risk
+                leveraged_loss = distance_pct * leverage
+                risk["stop_loss_price"] = self._round_price(allowed_stop)
                 decision["risk_management"] = risk
                 adjustments.append(
                     f"{decision.get('asset')}: 止损风险 {leveraged_loss:.2%} > 10%，已调整为 {risk['stop_loss_price']}。"
