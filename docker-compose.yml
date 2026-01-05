@@ -11,7 +11,7 @@ services:
       - .env
     volumes:
       # Persist databases and logs
-      - ./data:/app/data
+      - ./tradingagents/data:/app/tradingagents/data
       - ./logs:/app/logs
       # Mount results if needed
       - ./results:/app/results
