@@ -172,9 +172,7 @@ function FocusPage({
                 <CheckCircle size={14} /> Target
               </div>
               <div className="text-2xl font-bold font-heading text-success truncate font-mono-numbers">
-                {(Array.isArray(activeRisk.take_profit_targets)
-                  ? activeRisk.take_profit_targets.join(' / ')
-                  : activeRisk.take_profit_targets) || '—'}
+                {activeRisk.take_profit_price || '—'}
               </div>
               <div className="text-xs text-slate-500">Take Profit</div>
             </Card>

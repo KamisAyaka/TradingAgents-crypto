@@ -217,13 +217,7 @@ class PersistenceManager:
         leverage = execution.get("leverage") if execution else None
         entry_price = execution.get("entry_price") if execution else None
         stop_loss = risk.get("stop_loss_price") if risk else None
-        take_profit = None
-        targets = risk.get("take_profit_targets") if risk else None
-        if isinstance(targets, list) and targets:
-            take_profit = targets[0]
-        elif targets is not None:
-             # Handle single value case if user changed schema
-             take_profit = targets
+        take_profit = risk.get("take_profit_price") if risk else None
              
         invalidations = risk.get("invalidations") if risk else []
         monitoring = risk.get("monitoring") if risk else []

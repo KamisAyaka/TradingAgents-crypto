@@ -99,19 +99,12 @@ class ExecutionManager:
             if stop_loss_price is not None:
                 risk["stop_loss_price"] = stop_loss_price
 
-            # 提前把止盈目标规范化（四舍五入），避免下游重复处理。
-            take_profit_targets = risk.get("take_profit_targets")
-            if isinstance(take_profit_targets, list):
-                rounded_targets = [
-                    self._round_price(self._coerce_float(target))
-                    for target in take_profit_targets
-                ]
-                rounded_targets = [target for target in rounded_targets if target is not None]
-                risk["take_profit_targets"] = rounded_targets
-            elif take_profit_targets is not None:
-                risk["take_profit_targets"] = self._round_price(
-                    self._coerce_float(take_profit_targets)
-                )
+            # 提前把止盈价规范化（四舍五入），避免下游重复处理。
+            take_profit_price = self._round_price(
+                self._coerce_float(risk.get("take_profit_price"))
+            )
+            if take_profit_price is not None:
+                risk["take_profit_price"] = take_profit_price
 
             if entry_price_for_risk is None:
                 continue
@@ -125,16 +118,12 @@ class ExecutionManager:
                 warnings.append(
                     f"{decision.get('asset')}: 缺少 stop_loss_price，无法校验 10% 规则。"
                 )
-            missing_take_profit = False
-            if isinstance(risk.get("take_profit_targets"), list):
-                targets = risk.get("take_profit_targets") or []
-                missing_take_profit = not targets
-            else:
-                tp_value = risk.get("take_profit_targets")
-                missing_take_profit = tp_value is None or tp_value <= 0
+            missing_take_profit = (
+                take_profit_price is None or take_profit_price <= 0
+            )
             if missing_take_profit:
                 warnings.append(
-                    f"{decision.get('asset')}: 缺少 take_profit_targets，无法执行止盈/止损设置。"
+                    f"{decision.get('asset')}: 缺少 take_profit_price，无法执行止盈/止损设置。"
                 )
             if stop_loss_price is None:
                 continue
@@ -221,12 +210,7 @@ class ExecutionManager:
 
             leverage = self._coerce_int(execution.get("leverage"))
             stop_loss_price = self._coerce_float(risk.get("stop_loss_price"))
-            take_profit_targets = risk.get("take_profit_targets")
-            take_profit_price = None
-            if isinstance(take_profit_targets, list) and take_profit_targets:
-                take_profit_price = self._coerce_float(take_profit_targets[0])
-            elif take_profit_targets is not None:
-                take_profit_price = self._coerce_float(take_profit_targets)
+            take_profit_price = self._coerce_float(risk.get("take_profit_price"))
 
             entry_result = ""
             leverage_result = ""

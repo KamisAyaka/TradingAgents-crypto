@@ -25,59 +25,6 @@ def create_trader(llm, trader_round_store):
             except Exception:
                 return None
 
-    def _missing_protection(plan, asset):
-        if not plan or not asset:
-            return False
-        per_asset = plan.get("per_asset_decisions") or []
-        for item in per_asset:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("asset") or "").upper() != asset:
-                continue
-            risk = item.get("risk_management") or {}
-            stop_loss = risk.get("stop_loss_price")
-            take_profit = risk.get("take_profit_targets")
-            if stop_loss is None or (isinstance(stop_loss, (int, float)) and stop_loss <= 0):
-                return True
-            if isinstance(take_profit, list):
-                if not take_profit:
-                    return True
-                first = take_profit[0]
-                if first is None or (isinstance(first, (int, float)) and first <= 0):
-                    return True
-            elif take_profit is None or (isinstance(take_profit, (int, float)) and take_profit <= 0):
-                return True
-            return False
-        return False
-
-    def _apply_missing_protection(plan, asset, response_text):
-        if not plan or not asset:
-            return plan
-        payload = _extract_plan_json(response_text)
-        if not payload:
-            return plan
-        per_asset = plan.get("per_asset_decisions") or []
-        for item in per_asset:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("asset") or "").upper() != asset:
-                continue
-            risk = item.get("risk_management") or {}
-            stop_loss = risk.get("stop_loss_price")
-            take_profit = risk.get("take_profit_targets")
-            if stop_loss is None or stop_loss == 0:
-                candidate = payload.get("stop_loss_price") or payload.get("risk_management", {}).get("stop_loss_price")
-                if candidate is not None:
-                    risk["stop_loss_price"] = candidate
-            if take_profit is None or take_profit == 0 or take_profit == []:
-                candidate = payload.get("take_profit_targets") or payload.get("risk_management", {}).get("take_profit_targets")
-                if candidate is not None:
-                    risk["take_profit_targets"] = candidate
-            item["risk_management"] = risk
-            break
-        plan["per_asset_decisions"] = per_asset
-        return plan
-
     def trader_node(state):
         investment_debate_state = state["investment_debate_state"]
         assets = state.get("assets_under_analysis") or list(DEFAULT_ASSETS)
@@ -116,6 +63,10 @@ def create_trader(llm, trader_round_store):
         system_message = f"""### 角色任务
 你是专业的加密货币合约交易 AI，执行基于“支撑位 + 压力位”的右侧趋势交易系统。资产列表：{asset_list}。可支配资金：{capital_hint}，允许杠杆范围：{leverage_hint}。
 
+### 硬性输出要求（必须遵守）
+1. 只要是 LONG/SHORT 决策，必须在 JSON 的 risk_management.stop_loss_price 与 risk_management.take_profit_price 中给出数值，绝对不允许出现 null。
+2. 只有在 decision=WAIT 时，才允许这两个字段为 null。
+
 ### 核心目标
 - 只在关键支撑/压力附近寻找顺势且盈亏比合理的机会。
 - 没机会可观望，但不能因轻微不完美否决所有机会。
@@ -139,7 +90,7 @@ def create_trader(llm, trader_round_store):
 
 ### 风险与检查
 1. 只要是 LONG/SHORT 决策，必须同时给出止损价与止盈价，且为数值，不能为 null；仅当决策为 WAIT 才允许为 null。
-2. 若已持仓且保持不动，也必须在 JSON 字段 risk_management.stop_loss_price 与 risk_management.take_profit_targets 中给出数值，不能只写规则描述。
+2. 若已持仓且保持不动，也必须在 JSON 字段 risk_management.stop_loss_price 与 risk_management.take_profit_price 中给出数值，不能只写规则描述。
 2. 最大亏损：止损距离 × 杠杆 ≤ 10%；超出需降杠杆或调整止损，否则不得开仓。
 3. 结构：关键位间距不足以支撑盈亏比时不得开仓。
 4. 信号：至少一种可解释的反转/延续信号。
@@ -153,7 +104,7 @@ def create_trader(llm, trader_round_store):
 1. 使用当前持仓信息判断是否继续持有、减仓或平仓，并说明原因。
 2. 只允许选择一个资产进行全仓押注，其余资产一律 WAIT。
 3. 判断“现在是否已满足入场条件”。满足则直接给出开仓/持仓建议；不满足则 WAIT。
-4. 给出入场条件、止损价、止盈价与杠杆倍数，并说明信号与结构逻辑（止损/止盈必须落在 risk_management.stop_loss_price 与 risk_management.take_profit_targets 字段）。
+4. 给出入场条件、止损价、止盈价与杠杆倍数，并说明信号与结构逻辑（止损/止盈必须落在 risk_management.stop_loss_price 与 risk_management.take_profit_price 字段）。
 5. 输出单行 JSON，字段固定。
 
 ### 参考资料
@@ -184,51 +135,24 @@ JSON 结构：
         "stop_rule": "止损/降仓规则（包含具体价格）",
         "stop_loss_price": "建议的止损价格（USDT，数值，LONG/SHORT 必填，不能为 null；WAIT 才允许为 null）",
         "take_profit_rule": "止盈规则（包含具体价格）",
-        "take_profit_targets": "止盈价（USDT，数值，LONG/SHORT 必填，不能为 null；WAIT 才允许为 null）",
+        "take_profit_price": "止盈价（USDT，数值，LONG/SHORT 必填，不能为 null；WAIT 才允许为 null）",
         "monitoring": ["需要持续跟踪的信号"]
       }}
     }}
   ],
-}}"""
+}}
+
+### 最终输出检查清单（必须通过）
+1) LONG/SHORT 时，risk_management.stop_loss_price 与 risk_management.take_profit_price 必须是数值，不能为 null/空。
+2) HOLD/已持仓不动也视为 LONG/SHORT 逻辑，必须填写 risk_management.stop_loss_price 与 risk_management.take_profit_price 的数值，不能为 null/空。
+3) 仅 decision=WAIT 时允许上述字段为 null。
+"""
         conversation = list(state["messages"])
         conversation.append(("human", f"请根据资产列表 {asset_list} 给出交易计划。"))
 
-        response = None
-        combined_plan = ""
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            response = llm.invoke([SystemMessage(content=system_message)] + conversation)
-            plan_text = response.content if isinstance(response.content, str) else str(response.content)
-            combined_plan = plan_text.strip()
-            plan_json = _extract_plan_json(combined_plan)
-            if open_asset and _missing_protection(plan_json, open_asset):
-                conversation.append(
-                    (
-                        "human",
-                        f"只补充持仓资产 {open_asset} 缺失的字段值："
-                        "risk_management.stop_loss_price 与 risk_management.take_profit_targets。"
-                        "请只返回包含字段名的 JSON 片段，例如："
-                        "{\"risk_management\": {\"stop_loss_price\": 3114, \"take_profit_targets\": 3350}}。",
-                    )
-                )
-                response = llm.invoke([SystemMessage(content=system_message)] + conversation)
-                response_text = (
-                    response.content if isinstance(response.content, str) else str(response.content)
-                )
-                plan_json = _apply_missing_protection(plan_json, open_asset, response_text)
-                if _missing_protection(plan_json, open_asset):
-                    conversation.append(
-                        (
-                            "human",
-                            f"仍然缺失数值。请再次仅输出包含字段名的 JSON 片段，"
-                            f"补全 {open_asset} 的 stop_loss_price 与 take_profit_targets。",
-                        )
-                    )
-                    continue
-                combined_plan = json.dumps(plan_json, ensure_ascii=False)
-            break
-        else:
-            raise ValueError("交易员未补全持仓资产的止盈/止损数值。")
+        response = llm.invoke([SystemMessage(content=system_message)] + conversation)
+        plan_text = response.content if isinstance(response.content, str) else str(response.content)
+        combined_plan = plan_text.strip()
 
         current_round = int(state.get("interaction_round", 1))
         next_round = current_round + 1
