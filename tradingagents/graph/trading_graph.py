@@ -5,6 +5,7 @@ import os
 import logging
 from datetime import date, datetime, timezone
 from typing import Dict, Any, Optional, cast
+from concurrent.futures import ThreadPoolExecutor
 
 from langchain_openai import ChatOpenAI
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -20,6 +21,7 @@ from tradingagents.agents.utils.agent_states import (
 )
 from tradingagents.agents.utils.memory import FinancialSituationMemory
 from tradingagents.dataflows.trader_round_memory import TraderRoundMemoryStore
+from tradingagents.dataflows.binance_future import get_service
 from tradingagents.dataflows.trace_store import TraceStore
 from tradingagents.agents.reflection.trade_cycle_reflector import TradeCycleReflector
 
@@ -153,6 +155,7 @@ class TradingAgentsGraph:
         )
         self.trade_memory = FinancialSituationMemory("trade_memory", self.config)
         self.trade_reflector = TradeCycleReflector(self._initialize_deepseek_official_llm())
+        self._reflection_executor = ThreadPoolExecutor(max_workers=1)
         
         self.trader_round_store = TraderRoundMemoryStore(
             self.config.get("trader_round_db_path")
@@ -372,15 +375,82 @@ class TradingAgentsGraph:
         self.persistence_manager.record_trader_round_summary(final_state)
         self.persistence_manager.persist_trace_snapshot(final_state)
 
+        # 检查交易所是否已经自动平仓（止盈/止损触发），触发复盘并写入记录。
+        self._detect_exchange_close_and_reflect(final_state, asset_symbols)
+
         # 如有平仓记录，触发复盘并写入记忆库。
         pending = final_state.pop("_pending_trade_info", None)
         if pending:
             for info in pending:
-                try:
-                    self.record_trade_reflection(info)
-                except Exception as exc:  # pragma: no cover
-                    self.logger.warning("自动复盘失败: %s", exc)
+                self._submit_reflection(info)
         return final_state, final_state["final_trade_decision"]
+
+    def _detect_exchange_close_and_reflect(
+        self, state: Dict[str, Any], asset_symbols
+    ) -> None:
+        assets = [str(a).upper() for a in (asset_symbols or []) if str(a).strip()]
+        if not assets:
+            return
+        svc = get_service()
+        for symbol in assets:
+            try:
+                positions = svc.get_positions([symbol])
+            except Exception as exc:  # pragma: no cover - runtime env dependent
+                self.logger.warning("查询持仓失败 %s: %s", symbol, exc)
+                continue
+
+            has_position = False
+            for pos in positions:
+                try:
+                    if abs(float(pos.get("positionAmt", 0.0))) > 0:
+                        has_position = True
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if has_position:
+                continue
+
+            open_entry = self.trader_round_store.get_first_open_entry_since_close(symbol)
+            if not open_entry:
+                continue
+
+            entry_decision = str(open_entry.get("decision") or "").upper()
+            close_decision = (
+                "CLOSE_LONG" if entry_decision == "LONG" else "CLOSE_SHORT"
+            )
+            trade_info = self.persistence_manager.build_trade_info_from_open_entry(
+                symbol, close_decision, None
+            )
+            if trade_info:
+                try:
+                    trade_info["exit_price"] = svc.get_mark_price(symbol)
+                except Exception:
+                    trade_info["exit_price"] = None
+                trade_info["exit_time"] = datetime.now(timezone.utc).isoformat()
+                trade_info["notes"] = "exchange_close"
+
+            summary = (
+                f"[结论] {symbol} | {close_decision} | 交易所止盈/止损触发"
+            )
+            situation = self.persistence_manager.build_context_snapshot(state)
+            round_id = int(state.get("interaction_round") or 0)
+            assets_under_analysis = state.get("assets_under_analysis") or []
+            self.trader_round_store.add_round(
+                summary=summary,
+                situation=situation,
+                assets=assets_under_analysis,
+                round_id=round_id,
+                decision=close_decision,
+                asset=symbol,
+                is_open_entry=False,
+                entry_price=self._coerce_float(open_entry.get("entry_price")),
+                stop_loss=self._coerce_float(open_entry.get("stop_loss")),
+                take_profit=self._coerce_float(open_entry.get("take_profit")),
+                leverage=self._coerce_int(open_entry.get("leverage")),
+            )
+
+            if trade_info:
+                self._submit_reflection(trade_info)
 
     def record_trade_reflection(self, trade_info: Dict[str, Any]) -> Optional[str]:
         """
@@ -437,6 +507,43 @@ class TradingAgentsGraph:
             metadata_list=[metadata],
         )
         return summary
+
+    def _submit_reflection(self, trade_info: Dict[str, Any]) -> None:
+        if not trade_info:
+            return
+
+        def _run() -> None:
+            try:
+                self.record_trade_reflection(trade_info)
+            except Exception as exc:  # pragma: no cover
+                self.logger.warning("自动复盘失败: %s", exc)
+
+        try:
+            self._reflection_executor.submit(_run)
+        except Exception as exc:  # pragma: no cover
+            self.logger.warning("提交复盘任务失败: %s", exc)
+
+    @staticmethod
+    def _coerce_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value).strip())
+        except Exception:
+            return None
+
+    @staticmethod
+    def _coerce_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            return None
 
     def run_analysts_only(self, asset_symbols) -> Dict[str, Any]:
         """仅运行分析师节点（用于测试或缓存刷新）"""
