@@ -157,15 +157,13 @@ class FinancialSituationMemory:
 
     def get_entries(self, where=None, limit=None):
         """按 metadata 过滤原始条目，返回 [{id, document, metadata}, ...]。"""
-        include = ["metadatas", "documents", "ids"]
         collection = cast(Any, self.situation_collection)
-        include_typed: List[Literal["metadatas", "documents", "ids"]] = [
+        include_typed: List[Literal["metadatas", "documents"]] = [
             "metadatas",
             "documents",
-            "ids",
         ]
         raw = collection.get(where=where, limit=limit, include=include_typed)
-        ids = raw.get("ids") or raw.get("ids", [])
+        ids = raw.get("ids") or []
         documents = raw.get("documents") or []
         metadatas = raw.get("metadatas") or []
 

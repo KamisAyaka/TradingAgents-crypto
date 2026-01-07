@@ -152,7 +152,7 @@ class TradingAgentsGraph:
             backend_url=deep_backend,
         )
         self.trade_memory = FinancialSituationMemory("trade_memory", self.config)
-        self.trade_reflector = TradeCycleReflector(self.deep_thinking_llm)
+        self.trade_reflector = TradeCycleReflector(self._initialize_deepseek_official_llm())
         
         self.trader_round_store = TraderRoundMemoryStore(
             self.config.get("trader_round_db_path")
@@ -240,6 +240,17 @@ class TradingAgentsGraph:
             extra_body=extra_body,
         )
         return _FallbackChatModel(primary, fallback, fallback_base)
+
+    def _initialize_deepseek_official_llm(self):
+        api_key = os.getenv("DEEPSEEK_API_KEY")
+        if not api_key:
+            raise ValueError("DEEPSEEK_API_KEY 未设置，无法初始化复盘模型。")
+        return ChatOpenAI(
+            model="deepseek-chat",
+            base_url="https://api.deepseek.com/v1",
+            api_key=SecretStr(api_key),
+            extra_body={"enable_thinking": False},
+        )
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """为不同数据源创建工具节点。"""
