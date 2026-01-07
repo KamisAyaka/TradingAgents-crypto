@@ -71,7 +71,7 @@ class _FallbackChatModel(BaseChatModel):
             )
         except Exception as exc:
             logger = logging.getLogger(__name__)
-            logger.warning(self._format_error(exc))
+            logger.debug(self._format_error(exc))
             return self._fallback._generate(
                 messages, stop=stop, run_manager=run_manager, **kwargs
             )
@@ -83,7 +83,7 @@ class _FallbackChatModel(BaseChatModel):
             )
         except Exception as exc:
             logger = logging.getLogger(__name__)
-            logger.warning(self._format_error(exc))
+            logger.debug(self._format_error(exc))
             return await self._fallback._agenerate(
                 messages, stop=stop, run_manager=run_manager, **kwargs
             )

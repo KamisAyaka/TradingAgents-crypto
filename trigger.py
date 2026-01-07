@@ -2,6 +2,7 @@
 
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -24,12 +25,36 @@ from tradingagents.dataflows.binance_future import get_service
 from fetchers.binance_fetcher import sync_binance_pairs
 from fetchers.odaily_fetcher import sync_articles, sync_newsflash
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+# 配置日志（同时输出到控制台和文件）
+LOG_DIR = os.getenv("TRADINGAGENTS_LOG_DIR", "./logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_PATH = os.path.join(LOG_DIR, "tradingagents.log")
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.WARNING)
+formatter = logging.Formatter(LOG_FORMAT, DATE_FORMAT)
+
+if not root_logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+
+file_handler_exists = any(
+    isinstance(handler, RotatingFileHandler) for handler in root_logger.handlers
 )
+if not file_handler_exists:
+    file_handler = RotatingFileHandler(
+        LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+# Reduce noisy framework logs; keep warnings/errors only.
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
@@ -395,6 +420,8 @@ def _check_price_alert(
             node_price = node.get("price")
             condition = str(node.get("condition") or "touch").lower()
             note = node.get("note") or node.get("reason") or "monitoring_price"
+            if node_price is None:
+                continue
             try:
                 node_price = float(node_price)
             except (TypeError, ValueError):
