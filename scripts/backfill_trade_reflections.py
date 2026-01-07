@@ -60,10 +60,19 @@ def backfill_reflections(limit: int | None = None):
             symbol = open_entry["asset"]
             entry_time = open_entry["created_at"]
             existing = memory.get_entries(
-                where={"symbol": symbol, "entry_time": entry_time}, limit=1
+                where={"symbol": symbol}, limit=200
             )
             if existing:
+                for item in existing:
+                    meta = item.get("metadata") or {}
+                    if meta.get("entry_time") == entry_time:
+                        open_entry = None
+                        break
+            if existing:
                 open_entry = None
+                continue
+
+            if open_entry is None:
                 continue
 
             trade_info = {

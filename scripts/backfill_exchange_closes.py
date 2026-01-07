@@ -22,22 +22,15 @@ def _connect_db(db_path: str):
     return conn
 
 
-def _find_open_entries(conn):
+def _get_asset_rounds(conn, asset: str):
     return conn.execute(
         """
-        SELECT r.*
-        FROM trader_rounds r
-        WHERE r.decision IN ('LONG', 'SHORT')
-          AND r.asset IS NOT NULL
-          AND NOT EXISTS (
-              SELECT 1
-              FROM trader_rounds c
-              WHERE c.asset = r.asset
-                AND c.created_at > r.created_at
-                AND c.decision IN ('CLOSE_LONG', 'CLOSE_SHORT')
-          )
-        ORDER BY r.created_at ASC, r.id ASC
-        """
+        SELECT *
+        FROM trader_rounds
+        WHERE asset = ?
+        ORDER BY created_at ASC, id ASC
+        """,
+        (asset,),
     ).fetchall()
 
 
@@ -50,6 +43,17 @@ def _get_latest_wait_round(conn):
         LIMIT 1
         """
     ).fetchone()
+
+
+def _get_assets(conn):
+    rows = conn.execute(
+        """
+        SELECT DISTINCT asset
+        FROM trader_rounds
+        WHERE asset IS NOT NULL AND asset <> ''
+        """
+    ).fetchall()
+    return [row["asset"] for row in rows]
 
 
 def backfill_exchange_closes():
@@ -65,8 +69,8 @@ def backfill_exchange_closes():
         [part for part in (latest_summary, latest_situation) if part]
     )
 
-    for entry in _find_open_entries(conn):
-        symbol = (entry["asset"] or "").upper()
+    for asset in _get_assets(conn):
+        symbol = (asset or "").upper()
         if not symbol:
             continue
         try:
@@ -85,36 +89,57 @@ def backfill_exchange_closes():
         if has_position:
             continue
 
-        decision = "CLOSE_LONG" if entry["decision"] == "LONG" else "CLOSE_SHORT"
-        summary = f"[结论] {symbol} | {decision} | 交易所自动平仓回填"
-        situation = combined_context or entry["situation"] or summary
-        assets_text = entry["assets"] or symbol
-        created_at = _utcnow_iso()
-        conn.execute(
-            """
-            INSERT INTO trader_rounds (
-                created_at, round_id, assets, situation, summary,
-                decision, asset, is_open_entry, entry_price, stop_loss,
-                take_profit, leverage
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                created_at,
-                entry["round_id"],
-                assets_text,
-                situation,
-                summary,
-                decision,
-                symbol,
-                0,
-                entry["entry_price"],
-                entry["stop_loss"],
-                entry["take_profit"],
-                entry["leverage"],
-            ),
-        )
-        inserted += 1
+        rounds = _get_asset_rounds(conn, symbol)
+        open_entry = None
+        for row in rounds:
+            decision = (row["decision"] or "").upper()
+            if decision in ("LONG", "SHORT"):
+                if open_entry is None:
+                    open_entry = row
+                continue
+            if decision in ("CLOSE_LONG", "CLOSE_SHORT"):
+                open_entry = None
+                continue
+            if decision == "WAIT" and open_entry:
+                close_decision = (
+                    "CLOSE_LONG" if open_entry["decision"] == "LONG" else "CLOSE_SHORT"
+                )
+                summary = f"[结论] {symbol} | {close_decision} | 交易所自动平仓回填"
+                wait_summary = row["summary"] or ""
+                wait_situation = row["situation"] or ""
+                wait_context = "\n\n".join(
+                    [part for part in (wait_summary, wait_situation) if part]
+                )
+                situation = (
+                    wait_context or combined_context or open_entry["situation"] or summary
+                )
+                assets_text = open_entry["assets"] or symbol
+                conn.execute(
+                    """
+                    INSERT INTO trader_rounds (
+                        created_at, round_id, assets, situation, summary,
+                        decision, asset, is_open_entry, entry_price, stop_loss,
+                        take_profit, leverage
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        row["created_at"],
+                        open_entry["round_id"],
+                        assets_text,
+                        situation,
+                        summary,
+                        close_decision,
+                        symbol,
+                        0,
+                        open_entry["entry_price"],
+                        open_entry["stop_loss"],
+                        open_entry["take_profit"],
+                        open_entry["leverage"],
+                    ),
+                )
+                inserted += 1
+                open_entry = None
 
     conn.commit()
     conn.close()
