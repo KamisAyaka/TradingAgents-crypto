@@ -10,21 +10,6 @@ def create_trader(llm, trader_round_store):
     Trader node 直接获取持仓信息并生成交易计划，不使用 ToolNode。
     """
 
-    def _extract_plan_json(plan_text: str):
-        if not plan_text:
-            return None
-        try:
-            return json.loads(plan_text)
-        except Exception:
-            start = plan_text.find("{")
-            end = plan_text.rfind("}")
-            if start == -1 or end == -1 or end <= start:
-                return None
-            try:
-                return json.loads(plan_text[start : end + 1])
-            except Exception:
-                return None
-
     def trader_node(state):
         investment_debate_state = state["investment_debate_state"]
         assets = state.get("assets_under_analysis") or list(DEFAULT_ASSETS)
