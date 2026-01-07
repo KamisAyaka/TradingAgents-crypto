@@ -48,6 +48,7 @@ function App() {
     selectedToolCalls,
     selectedTraceId,
     selectedTrace,
+    monitoringTargets,
   } = useTradingData()
 
   return (
@@ -81,6 +82,7 @@ function App() {
                 handleRun={handleRun}
                 handleScheduler={handleScheduler}
                 candles={candles}
+                monitoringTargets={monitoringTargets}
               />
             }
           />

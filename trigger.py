@@ -1,5 +1,6 @@
 """定时触发器 - 通过价格预警触发分析任务。"""
 
+import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -300,91 +301,121 @@ def _check_price_alert(
     store: TraderRoundMemoryStore,
 ) -> tuple[bool, Optional[str], Optional[str], float]:
     """检查价格预警触发情况。"""
-    # The original logic requires iterating over active alerts if we support multiple assets.
-    # Current limitation: get_latest_alert_band returns only ONE latest band.
-    # TODO: Support list_active_alert_bands in the future.
-
-    band = store.get_latest_alert_band()
+    targets = store.get_monitoring_targets()
     price_trigger_hit = False
     reason = None
     symbol = None
     price = 0
-    near_low = False
-    near_high = False
-    reached_low = False
-    reached_high = False
+    threshold_pct = float(os.getenv("PRICE_ALERT_THRESHOLD_PCT", "0.005"))
 
-    if band:
-        symbol = band.get("asset")
-        stop_loss = band.get("stop_loss")
-        take_profit = band.get("take_profit")
+    for target in targets:
+        symbol = target.get("symbol")
+        if not symbol:
+            continue
+        stop_loss = target.get("stop_loss")
+        take_profit = target.get("take_profit")
+        decision = str(target.get("decision") or "").upper()
+        side = "SHORT" if decision == "SHORT" else "LONG"
 
-        if symbol and (stop_loss is not None or take_profit is not None):
-            try:
-                price = get_service().get_mark_price(symbol)
-                if price > 0:
-                    threshold_pct = float(os.getenv("PRICE_ALERT_THRESHOLD_PCT", "0.005"))
+        try:
+            price = get_service().get_mark_price(symbol)
+            if price <= 0:
+                continue
+        except Exception as exc:
+            logger.warning("检查价格预警失败 %s: %s", symbol, exc)
+            continue
 
-                    reached_low = stop_loss is not None and price <= float(stop_loss)
-                    reached_high = take_profit is not None and price >= float(take_profit)
+        near_low = False
+        near_high = False
+        reached_low = False
+        reached_high = False
 
-                    if reached_low or reached_high:
-                        price_trigger_hit = True
+        if stop_loss is not None or take_profit is not None:
+            reached_low = stop_loss is not None and price <= float(stop_loss)
+            reached_high = take_profit is not None and price >= float(take_profit)
+            if reached_low or reached_high:
+                price_trigger_hit = True
+            else:
+                if stop_loss:
+                    near_low = (
+                        abs(price - float(stop_loss)) / float(stop_loss)
+                        <= threshold_pct
+                    )
+                if take_profit:
+                    near_high = (
+                        abs(price - float(take_profit)) / float(take_profit)
+                        <= threshold_pct
+                    )
+                if near_low or near_high:
+                    price_trigger_hit = True
+
+            if price_trigger_hit:
+                if side == "LONG":
+                    if reached_low:
+                        reason = "stop_loss_hit"
+                    elif reached_high:
+                        reason = "take_profit_hit"
                     else:
-                        if stop_loss:
-                            near_low = (
-                                abs(price - float(stop_loss)) / float(stop_loss)
-                                <= threshold_pct
-                            )
-                        if take_profit:
-                            near_high = (
-                                abs(price - float(take_profit)) / float(take_profit)
-                                <= threshold_pct
-                            )
+                        reason = "near_stop_loss" if near_low else "near_take_profit"
+                else:
+                    if reached_low:
+                        reason = "take_profit_hit"
+                    elif reached_high:
+                        reason = "stop_loss_hit"
+                    else:
+                        reason = "near_take_profit" if near_low else "near_stop_loss"
 
-                        if near_low or near_high:
-                            price_trigger_hit = True
-                            # 标记原因
-                            # ... logic below handles reason string ...
+                logger.info(
+                    "价格预警触发: %s (%s) 现价=%s stop_loss=%s take_profit=%s reason=%s",
+                    symbol,
+                    side,
+                    price,
+                    stop_loss,
+                    take_profit,
+                    reason,
+                )
+                return price_trigger_hit, reason, symbol, price
 
-                    if price_trigger_hit:
-                        # Determine reason
-                        open_entry = store.get_latest_open_entry(symbol)
-                        side = "LONG"
-                        if open_entry and open_entry.get("decision") == "SHORT":
-                            side = "SHORT"
+        if decision != "WAIT":
+            continue
 
-                        if side == "LONG":
-                            if reached_low:
-                                reason = "stop_loss_hit"
-                            elif reached_high:
-                                reason = "take_profit_hit"
-                            else:
-                                reason = (
-                                    "near_stop_loss" if near_low else "near_take_profit"
-                                )
-                        else:
-                            if reached_low:
-                                reason = "take_profit_hit"
-                            elif reached_high:
-                                reason = "stop_loss_hit"
-                            else:
-                                reason = (
-                                    "near_take_profit" if near_low else "near_stop_loss"
-                                )
-
-                        if reason:
-                            logger.info(
-                                "价格预警触发: %s (%s) 现价=%s stop_loss=%s take_profit=%s reason=%s",
-                                symbol,
-                                side,
-                                price,
-                                stop_loss,
-                                take_profit,
-                                reason,
-                            )
-            except Exception as exc:
-                logger.warning("检查价格预警失败 %s: %s", symbol, exc)
+        raw_prices = target.get("monitoring_prices")
+        nodes = []
+        if raw_prices:
+            if isinstance(raw_prices, str):
+                try:
+                    nodes = json.loads(raw_prices)
+                except Exception:
+                    nodes = []
+            elif isinstance(raw_prices, list):
+                nodes = raw_prices
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_price = node.get("price")
+            condition = str(node.get("condition") or "touch").lower()
+            note = node.get("note") or node.get("reason") or "monitoring_price"
+            try:
+                node_price = float(node_price)
+            except (TypeError, ValueError):
+                continue
+            hit = False
+            if condition == "above":
+                hit = price >= node_price
+            elif condition == "below":
+                hit = price <= node_price
+            else:
+                hit = abs(price - node_price) / node_price <= threshold_pct
+            if hit:
+                reason = f"monitoring:{note}"
+                logger.info(
+                    "价格预警触发: %s 现价=%s monitoring_price=%s reason=%s",
+                    symbol,
+                    price,
+                    node_price,
+                    reason,
+                )
+                return True, reason, symbol, price
 
     return price_trigger_hit, reason, symbol, price
 

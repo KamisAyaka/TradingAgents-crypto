@@ -52,6 +52,18 @@ class TraderRoundMemoryStore:
                 """
             )
             conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS monitoring_targets (
+                    symbol TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL,
+                    decision TEXT,
+                    stop_loss REAL,
+                    take_profit REAL,
+                    monitoring_prices TEXT
+                )
+                """
+            )
+            conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_trader_rounds_created_at ON trader_rounds(created_at)"
             )
             conn.execute(
@@ -252,6 +264,54 @@ class TraderRoundMemoryStore:
                 (symbol, last_trigger_at, last_reason, last_price),
             )
             conn.commit()
+
+    def upsert_monitoring_targets(
+        self,
+        symbol: str,
+        decision: Optional[str],
+        stop_loss: Optional[float],
+        take_profit: Optional[float],
+        monitoring_prices: Optional[str],
+        updated_at: Optional[str] = None,
+    ) -> None:
+        if not symbol:
+            return
+        updated_at = updated_at or _utcnow_iso()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO monitoring_targets (
+                    symbol, updated_at, decision, stop_loss, take_profit, monitoring_prices
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol) DO UPDATE SET
+                    updated_at=excluded.updated_at,
+                    decision=excluded.decision,
+                    stop_loss=excluded.stop_loss,
+                    take_profit=excluded.take_profit,
+                    monitoring_prices=excluded.monitoring_prices
+                """,
+                (
+                    symbol.upper(),
+                    updated_at,
+                    decision,
+                    stop_loss,
+                    take_profit,
+                    monitoring_prices,
+                ),
+            )
+            conn.commit()
+
+    def get_monitoring_targets(self) -> List[Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM monitoring_targets
+                ORDER BY updated_at DESC, symbol ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def prune_recent(self, keep_n: int = 100) -> None:
         if keep_n <= 0:

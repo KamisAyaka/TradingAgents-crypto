@@ -20,6 +20,7 @@ function useTradingData() {
   const [klines, setKlines] = useState([])
   const [trades, setTrades] = useState([])
   const [scheduler, setScheduler] = useState({ running: false, jobs: [] })
+  const [monitoringTargets, setMonitoringTargets] = useState([])
   const [status, setStatus] = useState('')
   const [error, setError] = useState('')
   const [klineMeta, setKlineMeta] = useState(null)
@@ -135,17 +136,32 @@ function useTradingData() {
         }
       }
     }
+    const fetchMonitoringTargets = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/monitoring-targets`)
+        const payload = await res.json()
+        if (active) {
+          setMonitoringTargets(payload.targets || [])
+        }
+      } catch (err) {
+        if (active) {
+          setError(String(err))
+        }
+      }
+    }
 
     fetchTraceHistory()
     fetchKlines()
     fetchScheduler()
     fetchTrades()
+    fetchMonitoringTargets()
 
     const timer = window.setInterval(() => {
       fetchTraceHistory()
       fetchKlines()
       fetchScheduler()
       fetchTrades()
+      fetchMonitoringTargets()
     }, 15000)
 
     return () => {
@@ -321,6 +337,7 @@ function useTradingData() {
     selectedToolCalls: toolCalls,
     selectedTraceId,
     selectedTrace,
+    monitoringTargets,
   }
 }
 

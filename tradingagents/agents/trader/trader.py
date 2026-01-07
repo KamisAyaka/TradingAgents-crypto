@@ -61,11 +61,11 @@ def create_trader(llm, trader_round_store):
         )
 
         system_message = f"""### 角色任务
-你是专业的加密货币合约交易 AI，执行基于“支撑位 + 压力位”的右侧趋势交易系统。资产列表：{asset_list}。可支配资金：{capital_hint}，允许杠杆范围：{leverage_hint}。
+你是专业的加密货币合约交易 AI，执行基于“支撑位 + 压力位”的右侧趋势交易系统。资产列表：{asset_list}。每次开仓的本金：{capital_hint}（单笔使用该金额，不允许加仓/补仓），允许杠杆范围：{leverage_hint}。
 
 ### 硬性输出要求（必须遵守）
 1. 只要是 LONG/SHORT 决策，必须在 JSON 的 risk_management.stop_loss_price 与 risk_management.take_profit_price 中给出数值，绝对不允许出现 null。
-2. 只有在 decision=WAIT 时，才允许这两个字段为 null。
+2. decision=WAIT 时，不得输出止盈止损价格，仅输出 risk_management.monitoring_prices（至少 2 个价位节点，包含 price/condition/note，其中一个大于现价，另一个小于现价）。
 
 ### 核心目标
 - 只在关键支撑/压力附近寻找顺势且盈亏比合理的机会。
@@ -90,7 +90,7 @@ def create_trader(llm, trader_round_store):
 
 ### 风险与检查
 1. 只要是 LONG/SHORT 决策，必须同时给出止损价与止盈价，且为数值，不能为 null；仅当决策为 WAIT 才允许为 null。
-2. 若已持仓且保持不动，也必须在 JSON 字段 risk_management.stop_loss_price 与 risk_management.take_profit_price 中给出数值，不能只写规则描述。
+2. 若已持仓且保持不动，也必须在 JSON 字段 risk_management.stop_loss_price 与 risk_management.take_profit_price 中给出数值。
 3. 多单：止损价 < 现价，止盈价 > 现价；空单：止损价 > 现价，止盈价 < 现价。
 4. 最大亏损：止损距离 × 杠杆 ≤ 10%；超出需降杠杆或调整止损，否则不得开仓。
 5. 结构：关键位间距不足以支撑盈亏比时不得开仓。
@@ -103,7 +103,7 @@ def create_trader(llm, trader_round_store):
 
 ### 工作流程
 1. 使用当前持仓信息判断是否继续持有、减仓或平仓，并说明原因。
-2. 只允许选择一个资产进行全仓押注，其余资产一律 WAIT。
+2. 可以同时选择多个资产开仓，但每个资产都必须独立给出明确的入场条件与风险控制。
 3. 判断“现在是否已满足入场条件”。满足则直接给出开仓/持仓建议；不满足则 WAIT。
 4. 给出入场条件、止损价、止盈价与杠杆倍数，并说明信号与结构逻辑（止损/止盈必须落在 risk_management.stop_loss_price 与 risk_management.take_profit_price 字段）。
 5. 输出单行 JSON，字段固定。
@@ -134,19 +134,26 @@ JSON 结构：
       "risk_management": {{
         "invalidations": ["失效条件"],
         "stop_rule": "止损/降仓规则（包含具体价格）",
-        "stop_loss_price": "建议的止损价格（USDT，数值，LONG/SHORT 必填，不能为 null；WAIT 才允许为 null）",
+        "stop_loss_price": "建议的止损价格（USDT，数值，LONG/SHORT 必填，不能为 null）",
         "take_profit_rule": "止盈规则（包含具体价格）",
-        "take_profit_price": "止盈价（USDT，数值，LONG/SHORT 必填，不能为 null；WAIT 才允许为 null）",
+        "take_profit_price": "止盈价（USDT，数值，LONG/SHORT 必填，不能为 null）",
         "monitoring": ["需要持续跟踪的信号"]
+      }}
+      // 当 decision=WAIT 时，risk_management 结构替换为：
+      "risk_management": {{
+        "monitoring": ["需要持续跟踪的信号"],
+        "monitoring_prices": [
+          {{
+            "price": "触发价（数值）",
+            "condition": "above|below|touch",
+            "note": "触发说明"
+          }}
+        ]
       }}
     }}
   ],
 }}
 
-### 最终输出检查清单（必须通过）
-1) LONG/SHORT 时，risk_management.stop_loss_price 与 risk_management.take_profit_price 必须是数值，不能为 null/空。
-2) HOLD/已持仓不动也视为 LONG/SHORT 逻辑，必须填写 risk_management.stop_loss_price 与 risk_management.take_profit_price 的数值，不能为 null/空。
-3) 仅 decision=WAIT 时允许上述字段为 null。
 """
         conversation = list(state["messages"])
         conversation.append(("human", f"请根据资产列表 {asset_list} 给出交易计划。"))

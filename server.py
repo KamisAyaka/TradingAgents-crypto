@@ -187,6 +187,12 @@ def get_trades(
     return {"trades": rows}
 
 
+@app.get("/api/monitoring-targets")
+def get_monitoring_targets() -> Dict[str, Any]:
+    targets = memory_store.get_monitoring_targets()
+    return {"targets": targets}
+
+
 @app.get("/api/trace/latest")
 def get_latest_trace() -> Dict[str, Any]:
     record = trace_store.get_latest_trace()

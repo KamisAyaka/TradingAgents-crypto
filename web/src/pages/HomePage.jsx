@@ -27,6 +27,7 @@ function HomePage({
   handleRun,
   handleScheduler,
   candles,
+  monitoringTargets,
 }) {
   const [selectedPoint, setSelectedPoint] = useState(null);
 
@@ -47,6 +48,24 @@ function HomePage({
     { label: '4h', value: '4h' },
     { label: '1d', value: '1d' },
   ];
+
+  const parseMonitoringPrices = (raw) => {
+    if (!raw) {
+      return [];
+    }
+    if (Array.isArray(raw)) {
+      return raw;
+    }
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (err) {
+        return [];
+      }
+    }
+    return [];
+  };
 
   return (
     <div className="min-h-screen bg-background pt-20 pb-8 px-4 sm:px-6 lg:px-8">
@@ -116,6 +135,85 @@ function HomePage({
                   <div className="text-xs text-slate-500 bg-slate-900/50 px-2 py-1 rounded">点击 K 线查看详情</div>
                 )}
               </div>
+            </Card>
+
+            <Card className="p-5 space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-700/50">
+                <div className="flex items-center gap-2">
+                  <BarChart2 size={18} className="text-primary" />
+                  <h2 className="text-sm font-bold font-heading text-slate-200">监控价位</h2>
+                </div>
+                <Badge variant="outline">实时</Badge>
+              </div>
+
+              {monitoringTargets.length ? (
+                <div className="space-y-4 text-xs">
+                  {monitoringTargets.map((target) => {
+                    const nodes = parseMonitoringPrices(target.monitoring_prices);
+                    const decision = (target.decision || '').toUpperCase();
+                    const hasAbove = nodes.some(
+                      (node) => (node.condition || '').toLowerCase() === 'above'
+                    );
+                    const hasBelow = nodes.some(
+                      (node) => (node.condition || '').toLowerCase() === 'below'
+                    );
+                    const nodeHint =
+                      decision === 'WAIT' && !(hasAbove && hasBelow)
+                        ? '缺少上下对照节点'
+                        : '';
+                    return (
+                      <div
+                        key={target.symbol}
+                        className="space-y-2 rounded-lg border border-slate-800/80 bg-slate-900/60 p-3"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="font-semibold text-slate-100">{target.symbol}</div>
+                          <Badge variant={decision === 'WAIT' ? 'default' : 'primary'}>
+                            {decision || 'N/A'}
+                          </Badge>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400">
+                          <div>
+                            止损:{' '}
+                            <span className="font-mono text-slate-200">
+                              {target.stop_loss ?? '—'}
+                            </span>
+                          </div>
+                          <div>
+                            止盈:{' '}
+                            <span className="font-mono text-slate-200">
+                              {target.take_profit ?? '—'}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="space-y-1 text-[11px]">
+                          {nodes.length ? (
+                            nodes.map((node, idx) => (
+                              <div
+                                key={`${target.symbol}-${idx}`}
+                                className="flex items-center justify-between text-slate-400"
+                              >
+                                <span className="font-mono text-slate-200">
+                                  {node.price ?? '—'}
+                                </span>
+                                <span className="uppercase">{node.condition || 'touch'}</span>
+                                <span className="text-slate-500">
+                                  {node.note || '监控价位'}
+                                </span>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="text-slate-500">暂无监控节点</div>
+                          )}
+                        </div>
+                        {nodeHint && <div className="text-[11px] text-amber-300">{nodeHint}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-xs text-slate-500">暂无监控数据</div>
+              )}
             </Card>
           </div>
 

@@ -136,10 +136,34 @@ class PersistenceManager:
         plan_text = state.get("trader_investment_plan") or ""
         plan = self._extract_plan_json(plan_text) or {}
         summary_data = self._build_trader_round_summary(state, plan)
-        if not summary_data:
-            return
-        self.trader_round_store.add_round(**summary_data)
-        self.trader_round_store.prune_recent(keep_n=100)
+        if summary_data:
+            self.trader_round_store.add_round(**summary_data)
+            self.trader_round_store.prune_recent(keep_n=100)
+
+        per_asset = plan.get("per_asset_decisions") or []
+        for item in per_asset:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("asset") or "").upper()
+            if not symbol:
+                continue
+            decision = str(item.get("decision") or "")
+            risk = item.get("risk_management") or {}
+            monitoring_prices = risk.get("monitoring_prices")
+            if monitoring_prices is not None and not isinstance(monitoring_prices, str):
+                try:
+                    monitoring_prices = json.dumps(
+                        monitoring_prices, ensure_ascii=False
+                    )
+                except Exception:
+                    monitoring_prices = None
+            self.trader_round_store.upsert_monitoring_targets(
+                symbol=symbol,
+                decision=decision,
+                stop_loss=self._coerce_float(risk.get("stop_loss_price")),
+                take_profit=self._coerce_float(risk.get("take_profit_price")),
+                monitoring_prices=monitoring_prices,
+            )
 
     def build_trade_info_from_open_entry(
         self, symbol: str, action: str, price: Optional[float]
