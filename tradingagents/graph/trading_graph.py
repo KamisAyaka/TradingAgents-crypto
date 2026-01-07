@@ -450,9 +450,21 @@ class TradingAgentsGraph:
             )
 
             if trade_info:
-                self._submit_reflection(trade_info)
+                state_snapshot = dict(self.curr_state or {})
+                latest_round = self.trader_round_store.get_latest_wait_round()
+                if latest_round:
+                    wait_summary = latest_round.get("summary") or ""
+                    wait_situation = latest_round.get("situation") or ""
+                    combined = "\n\n".join(
+                        [part for part in (wait_summary, wait_situation) if part]
+                    )
+                    if combined:
+                        state_snapshot["close_position_context"] = combined
+                self._submit_reflection(trade_info, state_snapshot)
 
-    def record_trade_reflection(self, trade_info: Dict[str, Any]) -> Optional[str]:
+    def record_trade_reflection(
+        self, trade_info: Dict[str, Any], state_override: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
         """
         执行交易复盘 (Trade Reflection)。
         
@@ -466,7 +478,7 @@ class TradingAgentsGraph:
         """
         if not trade_info:
             return None
-        state_snapshot = dict(self.curr_state or {})
+        state_snapshot = dict(state_override or self.curr_state or {})
         symbol = trade_info.get("symbol") or ""
         if symbol:
             open_entry = self.trader_round_store.get_first_open_entry_since_close(symbol)
@@ -476,9 +488,10 @@ class TradingAgentsGraph:
                 )
         
         # 构建平仓时的上下文快照，供复盘模型引用。
-        state_snapshot["close_position_context"] = self.persistence_manager.build_context_snapshot(
-            state_snapshot
-        )
+        if not state_snapshot.get("close_position_context"):
+            state_snapshot["close_position_context"] = self.persistence_manager.build_context_snapshot(
+                state_snapshot
+            )
         
         try:
             result = self.trade_reflector.reflect(trade_info, state_snapshot)
@@ -508,13 +521,15 @@ class TradingAgentsGraph:
         )
         return summary
 
-    def _submit_reflection(self, trade_info: Dict[str, Any]) -> None:
+    def _submit_reflection(
+        self, trade_info: Dict[str, Any], state_override: Optional[Dict[str, Any]] = None
+    ) -> None:
         if not trade_info:
             return
 
         def _run() -> None:
             try:
-                self.record_trade_reflection(trade_info)
+                self.record_trade_reflection(trade_info, state_override)
             except Exception as exc:  # pragma: no cover
                 self.logger.warning("自动复盘失败: %s", exc)
 
